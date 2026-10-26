@@ -308,6 +308,17 @@
         dlg.remove();
         resolve(result);
       });
+      if (typeof dlg.showModal !== 'function') {
+        // Minimal fallback for browsers without <dialog> support (Safari < 15.4)
+        dlg.classList.add('fallback');
+        dlg.showModal = () => dlg.setAttribute('open', '');
+        dlg.close = () => {
+          if (!dlg.hasAttribute('open')) return;
+          dlg.removeAttribute('open');
+          dlg.dispatchEvent(new Event('close'));
+        };
+        dlg.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') dlg.close(); });
+      }
       document.body.append(dlg);
       openModals++;
       dlg.showModal();
@@ -1775,30 +1786,38 @@
   async function openTerminal(cwd) {
     if (!S.info || !S.info.terminal || T.opening) return;
     T.opening = true;
-    if ($('bottom').classList.contains('collapsed')) toggleBottom();
-    if (window.matchMedia('(max-width: 680px)').matches) toggleMaxBottom(true);
-    if ($('panel-terminal').classList.contains('hidden')) switchTab('terminal');
     try {
-      await ensureXterm();
+      if ($('bottom').classList.contains('collapsed')) toggleBottom();
+      if (window.matchMedia('(max-width: 680px)').matches) toggleMaxBottom(true);
+      if ($('panel-terminal').classList.contains('hidden')) switchTab('terminal');
+      if (!T.term) {
+        termStatus('Loading the terminal…');
+        await ensureXterm();
+        if (typeof window.Terminal !== 'function' || !window.FitAddon) {
+          // The script loaded but couldn't run, e.g. a browser too old for its JavaScript
+          T.loading = null;
+          throw new Error('the terminal could not start in this browser. Update your browser '
+            + '(on iPad: update iPadOS in Settings > General > Software Update) and reload the page.');
+        }
+        // Give the terminal some room the first time it's opened
+        const bottom = $('bottom');
+        if (bottom.getBoundingClientRect().height < 320 && window.innerHeight > 700) {
+          bottom.style.height = Math.round(window.innerHeight * 0.45) + 'px';
+        }
+        createTerminal();
+      }
+      if (T.connected) {
+        if (cwd) termSend(cdCommand(cwd));
+        T.term.focus();
+      } else {
+        connectTerminal(cwd);
+      }
     } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      termStatus('Error: ' + msg, 'warn');
       fail(err, 'Terminal');
-      return;
     } finally {
       T.opening = false;
-    }
-    if (!T.term) {
-      // Give the terminal some room the first time it's opened
-      const bottom = $('bottom');
-      if (bottom.getBoundingClientRect().height < 320 && window.innerHeight > 700) {
-        bottom.style.height = Math.round(window.innerHeight * 0.45) + 'px';
-      }
-      createTerminal();
-    }
-    if (T.connected) {
-      if (cwd) termSend(cdCommand(cwd));
-      T.term.focus();
-    } else {
-      connectTerminal(cwd);
     }
   }
 
@@ -1821,7 +1840,14 @@
       bar.append(btn);
     }
     if (window.matchMedia('(pointer: coarse)').matches) document.body.classList.add('touch');
-    $('term-new').addEventListener('click', () => { if (T.term) connectTerminal(S.cwd); else openTerminal(S.cwd); });
+    $('term-new').addEventListener('click', () => {
+      if (T.term) {
+        T.term.reset();
+        connectTerminal(S.cwd);
+      } else {
+        openTerminal(S.cwd);
+      }
+    });
     $('term-cd').addEventListener('click', () => {
       if (T.connected) {
         termSend(cdCommand(S.cwd));

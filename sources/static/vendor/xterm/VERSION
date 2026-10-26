@@ -1,3 +1,5 @@
-@xterm/xterm 6.0.0 (https://www.npmjs.com/package/@xterm/xterm), MIT license
-@xterm/addon-fit 0.11.0 (https://www.npmjs.com/package/@xterm/addon-fit), MIT license
+@xterm/xterm 5.5.0 (https://www.npmjs.com/package/@xterm/xterm), MIT license
+@xterm/addon-fit 0.10.0 (https://www.npmjs.com/package/@xterm/addon-fit), MIT license
 Files copied from the npm packages, source map references removed.
+Version 5.5 is used on purpose: 6.x uses JavaScript syntax (class static
+blocks) that Safari only supports since 16.4, which breaks older iPads.

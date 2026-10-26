@@ -7,7 +7,7 @@ name = "Server Manager"
 description.en = "Web file manager and terminal to browse, edit, upload and download the files of your server, like FileZilla"
 description.fr = "Gestionnaire de fichiers et terminal web pour parcourir, éditer, envoyer et télécharger les fichiers de votre serveur"
 
-version = "1.1.0~ynh1"
+version = "1.1.1~ynh1"
 
 maintainers = ["GZPlaz"]
 

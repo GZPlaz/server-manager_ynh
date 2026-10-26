@@ -36,7 +36,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 from terminal import TerminalError, TerminalManager, WebSocket, accept_key, clamp
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")

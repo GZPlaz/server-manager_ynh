@@ -64,7 +64,7 @@ With full access, whoever can use this app effectively has root access to your s
 
 - `sources/server.py`: the backend, using only the Python standard library (no pip packages to install or keep up to date).
 - `sources/terminal.py`: the web terminal (pseudo-terminal + WebSocket, also standard library only).
-- `sources/static/`: the frontend, plain HTML/CSS/JavaScript without build step. The terminal emulator is [xterm.js](https://xtermjs.org) 6.0.0 (MIT), shipped in `sources/static/vendor/xterm/`, so nothing is loaded from external sites.
+- `sources/static/`: the frontend, plain HTML/CSS/JavaScript without build step. The terminal emulator is [xterm.js](https://xtermjs.org) 5.5.0 (MIT; 6.x needs Safari 16.4+, so 5.5 is used to support older iPads), shipped in `sources/static/vendor/xterm/`, so nothing is loaded from external sites.
 - `scripts/`, `conf/`, `manifest.toml`, `config_panel.toml`: the YunoHost packaging (packaging v2, helpers 2.1).
 
 NGINX forwards `https://your.domain/files/*` to the app (and the terminal's WebSocket to `/files/api/terminal`); SSOwat adds the `YNH_USER` header identifying the logged-in user.
