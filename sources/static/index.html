@@ -67,17 +67,30 @@
   </main>
 
   <section class="bottom" id="bottom">
+    <div class="bottom-resizer" id="bottom-resizer" title="Drag to resize"></div>
     <div class="tabs" role="tablist">
       <button class="tab active" data-tab="transfers" role="tab">Transfers <span class="badge hidden" id="transfer-count"></span></button>
       <button class="tab" data-tab="log" role="tab">Message log</button>
+      <button class="tab hidden" data-tab="terminal" role="tab" id="tab-terminal">Terminal <span class="dot hidden" id="term-dot"></span></button>
       <span class="spacer"></span>
       <button class="link-btn" id="btn-clear-transfers">Clear finished</button>
+      <button class="icon-btn small" id="btn-max-bottom" title="Maximize / restore panel"></button>
       <button class="icon-btn small" id="btn-toggle-bottom" title="Hide / show panel"></button>
     </div>
     <div class="tab-panel" id="panel-transfers">
       <div class="transfers" id="transfers"><div class="muted pad">No transfers yet. Upload with the toolbar or drag &amp; drop files onto the list.</div></div>
     </div>
     <div class="tab-panel hidden" id="panel-log"><ol class="log" id="log"></ol></div>
+    <div class="tab-panel hidden" id="panel-terminal">
+      <div class="term-bar">
+        <span class="term-status" id="term-status">Not connected</span>
+        <span class="spacer"></span>
+        <button class="link-btn" id="term-cd" title="Change the terminal's directory to the folder shown in the file list">Go to current folder</button>
+        <button class="link-btn" id="term-new">New session</button>
+      </div>
+      <div class="term-keys" id="term-keys" aria-label="Special keys"></div>
+      <div class="term" id="term"></div>
+    </div>
   </section>
 
   <footer class="statusbar">

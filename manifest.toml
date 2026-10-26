@@ -4,10 +4,10 @@ packaging_format = 2
 
 id = "server-manager"
 name = "Server Manager"
-description.en = "Web file manager to browse, edit, upload and download the files of your server, like FileZilla"
-description.fr = "Gestionnaire de fichiers web pour parcourir, éditer, envoyer et télécharger les fichiers de votre serveur"
+description.en = "Web file manager and terminal to browse, edit, upload and download the files of your server, like FileZilla"
+description.fr = "Gestionnaire de fichiers et terminal web pour parcourir, éditer, envoyer et télécharger les fichiers de votre serveur"
 
-version = "1.0.0~ynh1"
+version = "1.1.0~ynh1"
 
 maintainers = ["GZPlaz"]
 
@@ -52,6 +52,14 @@ ram.runtime = "40M"
     type = "boolean"
     default = true
 
+    [install.terminal]
+    ask.en = "Enable the web terminal?"
+    ask.fr = "Activer le terminal web ?"
+    help.en = "A shell in the browser to run commands on the server, like over SSH. With full access, it is a root shell. Only the 'admins' group can use it by default (permission 'Terminal')."
+    help.fr = "Un shell dans le navigateur pour exécuter des commandes sur le serveur, comme en SSH. Avec l'accès complet, c'est un shell root. Par défaut, seul le groupe 'admins' peut l'utiliser (permission 'Terminal')."
+    type = "boolean"
+    default = true
+
 [resources]
     [resources.system_user]
 
@@ -63,6 +71,11 @@ ram.runtime = "40M"
     # default, and the app can never be opened to anonymous visitors.
     main.allowed = "admins"
     main.protected = true
+    # Who can open the web terminal (a root shell with full access)
+    terminal.url = "/api/terminal"
+    terminal.show_tile = false
+    terminal.allowed = "admins"
+    terminal.protected = true
 
     [resources.ports]
 

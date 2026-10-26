@@ -222,7 +222,7 @@ svg.i {
 .bookmarks svg.i { width: 15px; height: 15px; }
 .bookmarks .muted { cursor: default; font-family: inherit; }
 
-.tree { flex: 1; overflow: auto; padding: 0 6px 12px; font-size: 13px; }
+.tree { flex: 1; overflow: auto; padding: 0 6px 12px; font-size: 13px; user-select: none; }
 .tree-row {
   display: flex;
   align-items: center;
@@ -571,3 +571,58 @@ dialog.modal::backdrop { background: rgba(10, 14, 22, .45); }
   .transfer .t-status { display: none; }
   .bottom { height: 150px; }
 }
+
+/* ---------- bottom panel: resize, maximize ---------- */
+
+.bottom { position: relative; min-height: 0; }
+.bottom-resizer {
+  position: absolute; top: -3px; left: 0; right: 0; height: 6px;
+  cursor: row-resize; z-index: 3;
+}
+.bottom-resizer:hover, .bottom-resizer.active { background: var(--accent); opacity: .5; }
+.bottom.collapsed .bottom-resizer { display: none; }
+.bottom.max {
+  position: fixed; inset: 0; z-index: 45;
+  height: auto !important;
+  border-top: 0;
+}
+.bottom.max .bottom-resizer { display: none; }
+.tab .dot { display: inline-block; width: 7px; height: 7px; margin-left: 4px; border-radius: 50%; background: var(--ok); vertical-align: middle; }
+
+/* ---------- terminal ---------- */
+
+#panel-terminal:not(.hidden) { display: flex; flex-direction: column; overflow: hidden; background: #111418; }
+.term-bar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 8px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+}
+.term-status { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.term-status.on { color: var(--ok); }
+.term-status.warn { color: var(--danger); }
+.term { flex: 1; min-height: 0; padding: 4px 0 0 6px; }
+.term .xterm { height: 100%; }
+.term .xterm-viewport { scrollbar-width: thin; }
+.term-keys {
+  display: none;
+  gap: 4px;
+  padding: 4px 6px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+.term-keys button {
+  flex: none;
+  min-width: 38px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  font: 12.5px var(--mono);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.term-keys button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.touch .term-keys, .term-keys.show { display: flex; }

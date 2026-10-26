@@ -47,6 +47,8 @@
     clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
     panel: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 15h18"/>',
     open: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+    terminal: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/>',
+    maximize: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
   };
 
   function icon(name) {
@@ -644,6 +646,7 @@
     { id: 'compress', icon: 'archive', label: 'Compress', title: 'Create a zip archive', enabled: (c) => c.any && c.browsing, run: () => compressEntries(selectedEntries()) },
     { id: 'extract', icon: 'extract', label: 'Extract', title: 'Extract archive here', enabled: (c) => c.one && isFileLike(c.one) && isArchive(c.one.name), run: () => extractEntry(ctx().one) },
     'sep',
+    { id: 'terminal', icon: 'terminal', label: 'Terminal', title: 'Open a terminal (shell) in this folder', enabled: () => !!(S.info && S.info.terminal), run: () => openTerminal(S.cwd) },
     { id: 'hidden', icon: 'eye', label: 'Hidden files', title: 'Show hidden files (dotfiles)', toggle: true, run: toggleHidden },
   ];
 
@@ -1639,6 +1642,205 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Terminal (shell over a WebSocket, rendered with xterm.js)
+  // ---------------------------------------------------------------------------
+
+  const T = { term: null, fit: null, ws: null, connected: false, ctrl: false, loading: null, keepalive: null, opening: false };
+
+  const shellQuote = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+  // Paths shown in the app are relative to the managed folder; the shell needs the real ones.
+  function systemPath(p) {
+    const root = (S.info && S.info.root) || '/';
+    if (root === '/') return p;
+    return p === '/' ? root : root + p;
+  }
+
+  const cdCommand = (p) => ({ type: 'input', data: `cd ${shellQuote(systemPath(p))}\r` });
+
+  function loadAsset(tag, attrs) {
+    return new Promise((resolve, reject) => {
+      const el = document.createElement(tag);
+      Object.assign(el, attrs);
+      el.onload = resolve;
+      el.onerror = () => reject(new Error('Could not load ' + (attrs.src || attrs.href)));
+      document.head.append(el);
+    });
+  }
+
+  function ensureXterm() {
+    if (!T.loading) {
+      T.loading = Promise.all([
+        loadAsset('link', { rel: 'stylesheet', href: 'static/vendor/xterm/xterm.css' }),
+        loadAsset('script', { src: 'static/vendor/xterm/xterm.js' })
+          .then(() => loadAsset('script', { src: 'static/vendor/xterm/addon-fit.js' })),
+      ]);
+      T.loading.catch(() => { T.loading = null; });
+    }
+    return T.loading;
+  }
+
+  function termStatus(text, cls = '') {
+    const el = $('term-status');
+    el.textContent = text;
+    el.className = 'term-status' + (cls ? ' ' + cls : '');
+    $('term-dot').classList.toggle('hidden', !T.connected);
+  }
+
+  let fitFrame = 0;
+  function fitTerminal() {
+    if (!T.fit || fitFrame) return;
+    fitFrame = requestAnimationFrame(() => {
+      fitFrame = 0;
+      if ($('panel-terminal').classList.contains('hidden') || $('bottom').classList.contains('collapsed')) return;
+      try { T.fit.fit(); } catch (e) { /* not visible yet */ }
+    });
+  }
+
+  function termSend(obj) {
+    if (T.ws && T.ws.readyState === WebSocket.OPEN) T.ws.send(JSON.stringify(obj));
+  }
+
+  function termInput(data) {
+    if (T.ctrl && data.length === 1) {
+      const code = data.toUpperCase().charCodeAt(0);
+      if (code >= 64 && code <= 95) data = String.fromCharCode(code - 64);
+      setCtrl(false);
+    }
+    termSend({ type: 'input', data });
+  }
+
+  function setCtrl(on) {
+    T.ctrl = on;
+    const btn = $('term-keys').querySelector('[data-ctrl]');
+    if (btn) btn.classList.toggle('on', on);
+  }
+
+  function createTerminal() {
+    T.term = new window.Terminal({
+      cursorBlink: true,
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace',
+      fontSize: 13,
+      scrollback: 5000,
+      theme: { background: '#111418', foreground: '#e4e8ef', cursor: '#e4e8ef', selectionBackground: '#2c4a80' },
+    });
+    T.fit = new window.FitAddon.FitAddon();
+    T.term.loadAddon(T.fit);
+    T.term.open($('term'));
+    T.term.onData(termInput);
+    T.term.onResize(({ cols, rows }) => termSend({ type: 'resize', cols, rows }));
+    new ResizeObserver(fitTerminal).observe($('term'));
+    fitTerminal();
+  }
+
+  function connectTerminal(cwd) {
+    if (T.ws) T.ws.close();
+    fitTerminal();
+    const url = new URL(apiUrl('terminal', { cwd: cwd || S.cwd || '/', cols: T.term.cols, rows: T.term.rows }), location.href);
+    url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(url.href);
+    ws.binaryType = 'arraybuffer';
+    T.ws = ws;
+    let opened = false;
+    termStatus('Connecting…');
+    ws.onopen = () => {
+      opened = true;
+      T.connected = true;
+      termStatus(`Connected to ${S.info.hostname} as ${S.info.running_as}`, 'on');
+      logMsg('ok', `Terminal session opened in ${cwd || S.cwd}`);
+      termSend({ type: 'resize', cols: T.term.cols, rows: T.term.rows });
+      clearInterval(T.keepalive);
+      T.keepalive = setInterval(() => termSend({ type: 'ping' }), 25000);
+      T.term.focus();
+    };
+    ws.onmessage = (ev) => {
+      if (typeof ev.data !== 'string') T.term.write(new Uint8Array(ev.data));
+    };
+    ws.onclose = () => {
+      if (T.ws !== ws) return;
+      T.ws = null;
+      T.connected = false;
+      clearInterval(T.keepalive);
+      if (opened) {
+        T.term.write('\r\n\x1b[90m[Session closed. Press Enter or click “New session” to start a new one.]\x1b[0m\r\n');
+        termStatus('Disconnected', 'warn');
+        logMsg('info', 'Terminal session closed');
+      } else {
+        termStatus('Could not open a terminal: it may be disabled, or you may not have the “terminal” permission.', 'warn');
+        logMsg('error', 'Could not open a terminal session');
+      }
+    };
+  }
+
+  async function openTerminal(cwd) {
+    if (!S.info || !S.info.terminal || T.opening) return;
+    T.opening = true;
+    if ($('bottom').classList.contains('collapsed')) toggleBottom();
+    if (window.matchMedia('(max-width: 680px)').matches) toggleMaxBottom(true);
+    if ($('panel-terminal').classList.contains('hidden')) switchTab('terminal');
+    try {
+      await ensureXterm();
+    } catch (err) {
+      fail(err, 'Terminal');
+      return;
+    } finally {
+      T.opening = false;
+    }
+    if (!T.term) {
+      // Give the terminal some room the first time it's opened
+      const bottom = $('bottom');
+      if (bottom.getBoundingClientRect().height < 320 && window.innerHeight > 700) {
+        bottom.style.height = Math.round(window.innerHeight * 0.45) + 'px';
+      }
+      createTerminal();
+    }
+    if (T.connected) {
+      if (cwd) termSend(cdCommand(cwd));
+      T.term.focus();
+    } else {
+      connectTerminal(cwd);
+    }
+  }
+
+  function setupTerminal() {
+    const keys = [
+      ['Esc', '\x1b'], ['Tab', '\t'], ['Ctrl', null], ['↑', '\x1b[A'], ['↓', '\x1b[B'], ['←', '\x1b[D'], ['→', '\x1b[C'],
+      ['^C', '\x03'], ['^D', '\x04'], ['^Z', '\x1a'], ['^L', '\x0c'], ['|', '|'], ['~', '~'], ['/', '/'], ['-', '-'],
+    ];
+    const bar = $('term-keys');
+    for (const [label, seq] of keys) {
+      const btn = h('button', { type: 'button', text: label });
+      if (seq === null) btn.dataset.ctrl = '1';
+      // pointerdown + preventDefault keeps the focus (and the on-screen keyboard) in the terminal
+      btn.addEventListener('pointerdown', (ev) => {
+        ev.preventDefault();
+        if (seq === null) setCtrl(!T.ctrl);
+        else termSend({ type: 'input', data: seq });
+        if (T.term) T.term.focus();
+      });
+      bar.append(btn);
+    }
+    if (window.matchMedia('(pointer: coarse)').matches) document.body.classList.add('touch');
+    $('term-new').addEventListener('click', () => { if (T.term) connectTerminal(S.cwd); else openTerminal(S.cwd); });
+    $('term-cd').addEventListener('click', () => {
+      if (T.connected) {
+        termSend(cdCommand(S.cwd));
+        T.term.focus();
+      } else {
+        openTerminal(S.cwd);
+      }
+    });
+    // Enter on a closed session starts a new one
+    $('term').addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' && T.term && !T.ws) {
+        ev.preventDefault();
+        connectTerminal(S.cwd);
+      }
+    }, true);
+    window.addEventListener('resize', fitTerminal);
+  }
+
+  // ---------------------------------------------------------------------------
   // Context menu
   // ---------------------------------------------------------------------------
 
@@ -1687,6 +1889,7 @@
       { icon: 'paste', label: one && isDirLike(one) ? 'Paste into folder' : 'Paste', disabled: !S.clipboard || (!(one && isDirLike(one)) && S.search), kbd: 'Ctrl+V', run: () => paste(one && isDirLike(one) ? one.path : S.cwd) },
       { icon: 'rename', label: 'Rename', disabled: !one, kbd: 'F2', run: () => renameEntry(one) },
       { icon: 'link', label: 'Copy path', disabled: !one, run: () => copyPathToClipboard(one.path) },
+      { icon: 'terminal', label: 'Open terminal here', hidden: !(S.info && S.info.terminal && one && isDirLike(one)), run: () => openTerminal(one.path) },
       'sep',
       { icon: 'lock', label: 'Permissions…', run: () => chmodDialog(sel) },
       { icon: 'user', label: 'Owner…', hidden: !fullAccess, run: () => chownDialog(sel) },
@@ -1708,6 +1911,7 @@
       { icon: 'paste', label: 'Paste', disabled: !S.clipboard, kbd: 'Ctrl+V', run: () => paste(S.cwd) },
       { icon: 'refresh', label: 'Refresh', kbd: 'F5', run: refresh },
       { icon: 'link', label: 'Copy folder path', run: () => copyPathToClipboard(S.cwd) },
+      { icon: 'terminal', label: 'Open terminal here', hidden: !(S.info && S.info.terminal), run: () => openTerminal(S.cwd) },
       { icon: 'download', label: 'Download folder as zip', run: () => downloadPaths([S.cwd]) },
     ]);
   }
@@ -1935,6 +2139,7 @@
         return;
       }
       if (openModals) return;
+      if (ev.target.closest && ev.target.closest('#panel-terminal')) return; // keys belong to the shell
       if (ev.key === 'Escape' && !$('context-menu').classList.contains('hidden')) {
         closeMenu();
         return;
@@ -1994,7 +2199,7 @@
 
     window.addEventListener('beforeunload', (ev) => {
       const uploading = Q.items.some((t) => ['queued', 'checking', 'starting', 'active'].includes(t.status));
-      if (editorDirty() || uploading) {
+      if (editorDirty() || uploading || T.connected) {
         ev.preventDefault();
         ev.returnValue = '';
       }
@@ -2017,14 +2222,58 @@
 
   function switchTab(name) {
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
-    $('panel-transfers').classList.toggle('hidden', name !== 'transfers');
-    $('panel-log').classList.toggle('hidden', name !== 'log');
+    for (const tab of ['transfers', 'log', 'terminal']) {
+      $('panel-' + tab).classList.toggle('hidden', name !== tab);
+    }
+    $('btn-clear-transfers').classList.toggle('hidden', name !== 'transfers');
     if (name === 'log') $('panel-log').scrollTop = $('panel-log').scrollHeight;
+    if (name === 'terminal') {
+      if (!T.term && !T.opening) openTerminal();
+      else fitTerminal();
+    }
   }
 
   function toggleBottom() {
-    const collapsed = $('bottom').classList.toggle('collapsed');
+    const bottom = $('bottom');
+    const collapsed = bottom.classList.toggle('collapsed');
+    if (collapsed) bottom.classList.remove('max');
     store.set('bottomCollapsed', collapsed);
+    fitTerminal();
+  }
+
+  function toggleMaxBottom(force) {
+    const bottom = $('bottom');
+    const max = bottom.classList.toggle('max', force);
+    if (max) bottom.classList.remove('collapsed');
+    fitTerminal();
+    if (max && T.term && !$('panel-terminal').classList.contains('hidden')) T.term.focus();
+  }
+
+  function setupBottomResizer() {
+    const bottom = $('bottom');
+    const handle = $('bottom-resizer');
+    const saved = store.get('bottomHeight', null);
+    if (saved) bottom.style.height = saved + 'px';
+    handle.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      handle.setPointerCapture(ev.pointerId);
+      handle.classList.add('active');
+      const startY = ev.clientY;
+      const startH = bottom.getBoundingClientRect().height;
+      const move = (e) => {
+        const h = Math.max(90, Math.min(window.innerHeight - 160, startH - (e.clientY - startY)));
+        bottom.style.height = h + 'px';
+        fitTerminal();
+      };
+      const up = () => {
+        handle.classList.remove('active');
+        handle.removeEventListener('pointermove', move);
+        handle.removeEventListener('pointerup', up);
+        store.set('bottomHeight', Math.round(bottom.getBoundingClientRect().height));
+      };
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', up);
+    });
   }
 
   function setupChrome() {
@@ -2035,6 +2284,10 @@
     $('btn-refresh').append(icon('refresh'));
     $('btn-bookmark').append(icon('star'));
     $('btn-toggle-bottom').append(icon('panel'));
+    $('btn-max-bottom').append(icon('maximize'));
+    $('btn-max-bottom').addEventListener('click', () => toggleMaxBottom());
+    setupBottomResizer();
+    setupTerminal();
     document.querySelector('.brand-logo').append(icon('logo'));
 
     $('btn-back').addEventListener('click', () => history.back());
@@ -2139,6 +2392,8 @@
       who.append(h('span', { class: 'warn-badge', text: 'full access', title: `The file manager runs as ${S.info.running_as}: be careful, you can modify any file of the system.` }));
     }
     document.title = `Server Manager · ${S.info.hostname}`;
+    $('tab-terminal').classList.toggle('hidden', !S.info.terminal);
+    updateToolbar();
     logMsg('info', `Connected as ${S.info.user}. Managing ${S.info.root} as system user ${S.info.running_as}.`);
     renderBookmarks();
     await load(hashPath());

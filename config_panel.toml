@@ -25,3 +25,11 @@ name.fr = "Configuration de Server Manager"
         help.fr = "Nécessaire pour modifier des fichiers système comme ceux de /etc. Si désactivé, l'app tourne avec son propre utilisateur système et ne peut modifier que les fichiers autorisés pour cet utilisateur."
         type = "boolean"
         default = true
+
+        [main.access.terminal]
+        ask.en = "Web terminal"
+        ask.fr = "Terminal web"
+        help.en = "A shell in the browser to run commands, like over SSH (a root shell with full access). Who can use it is set by the 'Terminal' permission (admins by default)."
+        help.fr = "Un shell dans le navigateur pour exécuter des commandes, comme en SSH (un shell root avec l'accès complet). Qui peut l'utiliser est défini par la permission 'Terminal' (les admins par défaut)."
+        type = "boolean"
+        default = true

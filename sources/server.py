@@ -34,7 +34,9 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlsplit
 
-VERSION = "1.0.0"
+from terminal import TerminalError, TerminalManager, WebSocket, accept_key, clamp
+
+VERSION = "1.1.0"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -337,8 +339,9 @@ def safe_tar_members(tar, dest):
 
 
 class Api:
-    def __init__(self, fs):
+    def __init__(self, fs, terminal=None):
         self.fs = fs
+        self.terminal = terminal or TerminalManager(enabled=False)
 
     # ---- read-only ---------------------------------------------------------
 
@@ -352,6 +355,8 @@ class Api:
             "hostname": socket.gethostname(),
             "running_as": user_name(os.geteuid()),
             "max_edit_size": MAX_EDIT_SIZE,
+            "terminal": self.terminal.enabled,
+            "terminal_mode": self.terminal.mode,
         }
 
     def list(self, req):
@@ -1055,15 +1060,19 @@ class Handler(BaseHTTPRequestHandler):
                                 "YunoHost single sign-on.")
         return user
 
+    def same_origin(self):
+        origin = self.headers.get("Origin")
+        if not origin:
+            return None
+        origin_host = urlsplit(origin).hostname or ""
+        host = (self.headers.get("Host") or "").split(":")[0]
+        return origin_host.lower() == host.lower()
+
     def check_csrf(self):
         if self.headers.get("X-Requested-With") != "ServerManager":
             raise ApiError(403, "Missing request header")
-        origin = self.headers.get("Origin")
-        if origin:
-            origin_host = urlsplit(origin).hostname or ""
-            host = (self.headers.get("Host") or "").split(":")[0]
-            if origin_host.lower() != host.lower():
-                raise ApiError(403, "Cross-origin request refused")
+        if self.same_origin() is False:
+            raise ApiError(403, "Cross-origin request refused")
 
     def dispatch(self, method):
         url = urlsplit(self.path)
@@ -1088,6 +1097,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_text_error(os_error_to_api(exc))
             elif method == "GET" and path == "/api/raw":
                 return self.serve_raw(Request(self, user, query))
+            elif method == "GET" and path == "/api/terminal":
+                return self.serve_terminal(Request(self, user, query))
             elif method in ("GET", "HEAD"):
                 route = self.GET_ROUTES.get(path)
             else:
@@ -1136,10 +1147,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self._security_headers()
         if name == "index.html":
+            # Some browsers (older Safari) don't match WebSockets with 'self'.
+            host = self.headers.get("Host") or ""
+            ws = f" wss://{host} ws://{host}" if host and all(c.isalnum() or c in ".-:[]" for c in host) else ""
+            # 'unsafe-inline' styles are needed by the terminal emulator (xterm.js)
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; "
-                "script-src 'self'; connect-src 'self'; object-src 'none'; "
+                "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
+                f"script-src 'self'; connect-src 'self'{ws}; object-src 'none'; "
                 "base-uri 'none'; form-action 'self'; frame-ancestors 'self'")
         self.end_headers()
         if self.command != "HEAD":
@@ -1148,15 +1163,15 @@ class Handler(BaseHTTPRequestHandler):
     @classmethod
     def load_static(cls):
         files = {}
-        for name in os.listdir(STATIC_DIR):
-            full = os.path.join(STATIC_DIR, name)
-            if not os.path.isfile(full):
-                continue
-            ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
-            if ctype.startswith("text/") or ctype in ("application/javascript", "image/svg+xml"):
-                ctype += "; charset=utf-8"
-            with open(full, "rb") as f:
-                files[name] = (f.read(), ctype)
+        for dirpath, _, filenames in os.walk(STATIC_DIR):
+            for filename in filenames:
+                full = os.path.join(dirpath, filename)
+                name = os.path.relpath(full, STATIC_DIR).replace(os.sep, "/")
+                ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
+                if ctype.startswith("text/") or ctype in ("application/javascript", "image/svg+xml"):
+                    ctype += "; charset=utf-8"
+                with open(full, "rb") as f:
+                    files[name] = (f.read(), ctype)
         cls.static_files = files
 
     # ---- downloads ---------------------------------------------------------
@@ -1211,6 +1226,38 @@ class Handler(BaseHTTPRequestHandler):
             return
         req.audit("download", ", ".join(v for _, v in sources) + " (zip)")
 
+    # ---- terminal ----------------------------------------------------------
+
+    def serve_terminal(self, req):
+        terminal = self.api.terminal
+        if not terminal.enabled:
+            raise ApiError(403, "The terminal is disabled in the app configuration")
+        key = self.headers.get("Sec-WebSocket-Key")
+        if self.headers.get("Upgrade", "").lower() != "websocket" or not key:
+            raise ApiError(400, "WebSocket connection expected")
+        # Browsers send cookies with WebSockets from any site: the origin must match.
+        if not self.same_origin():
+            raise ApiError(403, "Cross-origin request refused")
+        real, vpath = self.api.fs.resolve(req.arg("cwd", "/"))
+        if not os.path.isdir(real):
+            real, vpath = self.api.fs.root, "/"
+        rows = clamp(req.arg("rows"), 2, 500, 24)
+        cols = clamp(req.arg("cols"), 2, 1000, 80)
+        try:
+            session = terminal.open(req.user, real, rows, cols)
+        except TerminalError as exc:
+            raise ApiError(503, str(exc))
+        self.wfile.write((
+            "HTTP/1.1 101 Switching Protocols\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Accept: {accept_key(key)}\r\n\r\n").encode("ascii"))
+        self.close_connection = True
+        req.audit("terminal-open", f"session {session.id} in {vpath}")
+        terminal.run(WebSocket(self.rfile, self.connection), session)
+        req.audit("terminal-close", f"session {session.id} after "
+                                    f"{int(time.monotonic() - session.started)}s")
+
     def serve_raw(self, req):
         real, vpath = self.api.fs.resolve(req.arg("path"))
         ext = os.path.splitext(real)[1].lower()
@@ -1240,19 +1287,23 @@ def main():
     host = os.environ.get("SM_HOST", "127.0.0.1")
     port = int(os.environ.get("SM_PORT", "8080"))
     inherit_owner = os.environ.get("SM_INHERIT_OWNER", "1") not in ("0", "false", "False", "")
+    terminal = TerminalManager(
+        enabled=os.environ.get("SM_TERMINAL", "1") not in ("0", "false", "False", ""),
+        mode=os.environ.get("SM_TERMINAL_MODE", "auto"))
 
     if not os.path.isdir(root):
         log.error("Root folder %s does not exist", root)
         sys.exit(1)
 
-    Handler.api = Api(FileSystem(root, inherit_owner=inherit_owner))
+    Handler.api = Api(FileSystem(root, inherit_owner=inherit_owner), terminal)
     Handler.user_header = os.environ.get("SM_USER_HEADER", "YNH_USER")
     Handler.load_static()
 
     server = ThreadingHTTPServer((host, port), Handler)
     server.daemon_threads = True
-    log.info("Server Manager %s listening on %s:%s, managing %s as %s",
-             VERSION, host, port, Handler.api.fs.root, user_name(os.geteuid()))
+    log.info("Server Manager %s listening on %s:%s, managing %s as %s (terminal: %s)",
+             VERSION, host, port, Handler.api.fs.root, user_name(os.geteuid()),
+             terminal.mode if terminal.enabled else "disabled")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

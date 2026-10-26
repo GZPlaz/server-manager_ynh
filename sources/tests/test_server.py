@@ -3,15 +3,19 @@
 Run with:  python3 -m unittest discover -s sources/tests -v
 """
 
+import base64
 import http.client
 import io
 import json
 import os
 import shutil
+import socket
+import struct
 import sys
 import tarfile
 import tempfile
 import threading
+import time
 import unittest
 import zipfile
 from http.server import ThreadingHTTPServer
@@ -31,7 +35,8 @@ class ServerTestCase(unittest.TestCase):
         os.mkdir(cls.outside)
         with open(os.path.join(cls.outside, "secret.txt"), "w") as f:
             f.write("secret")
-        server.Handler.api = server.Api(server.FileSystem(cls.root))
+        cls.terminal = server.TerminalManager(enabled=True, mode="direct")
+        server.Handler.api = server.Api(server.FileSystem(cls.root), cls.terminal)
         server.Handler.load_static()
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
         cls.httpd.daemon_threads = True
@@ -440,6 +445,114 @@ class ServerTestCase(unittest.TestCase):
         status, data = self.get("search", path="/s", q="*.txt")
         self.assertEqual([r["name"] for r in data["results"]], ["other.txt"])
         self.assertEqual(data["results"][0]["dir"], "/s/two")
+
+
+    # ---- terminal ------------------------------------------------------
+
+    def ws_connect(self, origin="http://example.org", user="alice", cwd="/"):
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        key = base64.b64encode(os.urandom(16)).decode()
+        lines = [f"GET /api/terminal?cwd={cwd}&rows=24&cols=80 HTTP/1.1", "Host: example.org",
+                 "Upgrade: websocket", "Connection: Upgrade", f"Sec-WebSocket-Key: {key}",
+                 "Sec-WebSocket-Version: 13"]
+        if origin:
+            lines.append(f"Origin: {origin}")
+        if user:
+            lines.append(f"YNH_USER: {user}")
+        sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
+        response = b""
+        while b"\r\n\r\n" not in response:
+            chunk = sock.recv(1)
+            if not chunk:
+                break
+            response += chunk
+        status = int(response.split(b" ", 2)[1]) if response else 0
+        if status == 101:
+            self.assertIn(server.accept_key(key).encode(), response)
+        return sock, status
+
+    @staticmethod
+    def ws_send(sock, obj):
+        payload = json.dumps(obj).encode()
+        mask = os.urandom(4)
+        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        n = len(payload)
+        header = struct.pack("!BB", 0x81, 0x80 | n) if n < 126 else struct.pack("!BBH", 0x81, 0x80 | 126, n)
+        sock.sendall(header + mask + masked)
+
+    @staticmethod
+    def ws_read_until(sock, needle, timeout=10):
+        buf = b""
+        output = b""
+        sock.settimeout(timeout)
+        while needle not in output:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+            while len(buf) >= 2:
+                op, length = buf[0] & 0x0F, buf[1] & 0x7F
+                offset = 2
+                if length == 126:
+                    if len(buf) < 4:
+                        break
+                    length, offset = struct.unpack("!H", buf[2:4])[0], 4
+                elif length == 127:
+                    if len(buf) < 10:
+                        break
+                    length, offset = struct.unpack("!Q", buf[2:10])[0], 10
+                if len(buf) < offset + length:
+                    break
+                if op == 0x2:
+                    output += buf[offset:offset + length]
+                buf = buf[offset + length:]
+        return output
+
+    def test_terminal_runs_commands(self):
+        os.mkdir(os.path.join(self.root, "workdir"))
+        sock, status = self.ws_connect(cwd="/workdir")
+        self.assertEqual(status, 101)
+        try:
+            self.ws_send(sock, {"type": "resize", "rows": 30, "cols": 100})
+            self.ws_send(sock, {"type": "input", "data": "echo SM_$((40+2)); pwd; stty size\n"})
+            out = self.ws_read_until(sock, b"30 100")
+            self.assertIn(b"SM_42", out)
+            self.assertIn(os.path.join(self.root, "workdir").encode(), out)
+            self.assertIn(b"30 100", out)
+            self.ws_send(sock, {"type": "input", "data": "exit\n"})
+        finally:
+            sock.close()
+        for _ in range(50):
+            if not self.terminal.sessions:
+                break
+            time.sleep(0.1)
+        self.assertEqual(self.terminal.sessions, {})
+
+    def test_terminal_requires_same_origin(self):
+        sock, status = self.ws_connect(origin="https://evil.example")
+        sock.close()
+        self.assertEqual(status, 403)
+        sock, status = self.ws_connect(origin=None)
+        sock.close()
+        self.assertEqual(status, 403)
+        sock, status = self.ws_connect(user=None)
+        sock.close()
+        self.assertEqual(status, 401)
+
+    def test_terminal_can_be_disabled(self):
+        self.terminal.enabled = False
+        try:
+            sock, status = self.ws_connect()
+            sock.close()
+            self.assertEqual(status, 403)
+            self.assertFalse(self.get("info")[1]["terminal"])
+        finally:
+            self.terminal.enabled = True
+
+    def test_vendor_files_served(self):
+        res, data = self.request("GET", "/static/vendor/xterm/xterm.js", raw=True)
+        self.assertEqual(res.status, 200)
+        self.assertGreater(len(data), 100000)
 
 
 if __name__ == "__main__":

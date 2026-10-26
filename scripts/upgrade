@@ -21,6 +21,7 @@ ynh_script_progression "Ensuring downward compatibility..."
 
 ynh_app_setting_set_default --key=root_path --value="/"
 ynh_app_setting_set_default --key=full_access --value=1
+ynh_app_setting_set_default --key=terminal --value=1
 
 #=================================================
 # DEPLOY THE APPLICATION

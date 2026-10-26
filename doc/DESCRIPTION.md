@@ -1,4 +1,4 @@
-Server Manager is a web file manager for your YunoHost server: everything you would do with an SFTP client like FileZilla, directly from your browser, behind the YunoHost single sign-on.
+Server Manager is a web file manager and terminal for your YunoHost server: everything you would do with an SFTP client like FileZilla or an SSH client, directly from your browser, behind the YunoHost single sign-on.
 
 ### Features
 
@@ -12,5 +12,6 @@ Server Manager is a web file manager for your YunoHost server: everything you wo
 - Filter the current folder or search recursively by name (wildcards supported)
 - Preview images
 - Keyboard shortcuts (Enter, Backspace, Delete, F2, F5, Ctrl+A/C/X/V…), right-click menus, light and dark themes, works on mobile
+- A web terminal to run commands like over SSH (nano, htop, vim… work), with "Open terminal here" on any folder and special keys for tablets
 - Every change is recorded in an audit log (`/var/log/server-manager/server-manager.log`) with the name of the user who made it
-- No external dependency: a small Python standard library backend and a plain JavaScript frontend
+- No external dependency to install: a small Python standard library backend and a plain JavaScript frontend (xterm.js is bundled for the terminal)

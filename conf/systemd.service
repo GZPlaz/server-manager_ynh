@@ -10,7 +10,8 @@ WorkingDirectory=__INSTALL_DIR__/
 Environment="SM_HOST=127.0.0.1"
 Environment="SM_PORT=__PORT__"
 Environment="SM_ROOT=__ROOT_PATH__"
-ExecStart=/usr/bin/python3 -I __INSTALL_DIR__/server.py
+Environment="SM_TERMINAL=__TERMINAL_ENABLED__"
+ExecStart=/usr/bin/python3 -E -s __INSTALL_DIR__/server.py
 Restart=on-failure
 RestartSec=5
 UMask=0022
@@ -21,6 +22,9 @@ StandardError=inherit
 # This service exists to read and write the server's files, so the filesystem
 # protections (ProtectSystem, ProtectHome, PrivateTmp...) are deliberately not
 # used. Everything else that a file manager doesn't need is locked down.
+# When running as root, terminal sessions are started with systemd-run as
+# separate units, so these restrictions don't apply to the commands typed in
+# the terminal (they behave as in an SSH session).
 # Details for these options: https://www.freedesktop.org/software/systemd/man/systemd.exec.html
 NoNewPrivileges=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

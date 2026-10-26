@@ -14,12 +14,26 @@ _validate_root_path() {
     fi
 }
 
-# Define the system user the service runs as, used in the systemd template.
-_set_run_user() {
-    case "${full_access:-1}" in
-        1 | true | True | yes) run_user="root" ;;
-        *) run_user="$app" ;;
+_is_true() {
+    case "$1" in
+        1 | true | True | yes) return 0 ;;
+        *) return 1 ;;
     esac
+}
+
+# Define the variables used in the systemd template:
+# the system user the service runs as, and whether the terminal is enabled.
+_set_run_user() {
+    if _is_true "${full_access:-1}"; then
+        run_user="root"
+    else
+        run_user="$app"
+    fi
+    if _is_true "${terminal:-1}"; then
+        terminal_enabled=1
+    else
+        terminal_enabled=0
+    fi
 }
 
 # Deploy the application code shipped in this package.
@@ -28,7 +42,7 @@ _set_run_user() {
 _install_app_files() {
     ynh_safe_rm "$install_dir/static"
     mkdir -p "$install_dir/static"
-    cp "$YNH_APP_BASEDIR/sources/server.py" "$install_dir/server.py"
+    cp "$YNH_APP_BASEDIR/sources/server.py" "$YNH_APP_BASEDIR/sources/terminal.py" "$install_dir/"
     cp -r "$YNH_APP_BASEDIR/sources/static/." "$install_dir/static/"
     chown -R "root:$app" "$install_dir"
     chmod -R u=rwX,g=rX,o= "$install_dir"
