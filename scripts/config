@@ -1,0 +1,42 @@
+#!/bin/bash
+
+#=================================================
+# IMPORT GENERIC HELPERS
+#=================================================
+
+source _common.sh
+source /usr/share/yunohost/helpers
+
+#=================================================
+# RETRIEVE ARGUMENTS
+#=================================================
+
+install_dir=$(ynh_app_setting_get --key=install_dir)
+port=$(ynh_app_setting_get --key=port)
+
+#=================================================
+# SPECIFIC VALIDATORS FOR TOML SHORT KEYS
+#=================================================
+
+validate__root_path() {
+    if [[ ! "$root_path" =~ ^/ ]] || [[ "$root_path" =~ [\"\\%] ]]; then
+        echo "The folder must be an absolute path, without quotes, backslashes or % characters"
+    elif [ ! -d "$root_path" ]; then
+        echo "The folder '$root_path' does not exist"
+    fi
+}
+
+#=================================================
+# APPLY: SAVE SETTINGS, THEN REGENERATE THE SERVICE
+#=================================================
+
+ynh_app_config_apply() {
+    _ynh_app_config_apply
+
+    _set_run_user
+    ynh_config_add_systemd
+    ynh_systemctl --service="$app" --action="restart" --wait_until="listening on"
+}
+
+#=================================================
+ynh_app_config_run "$1"

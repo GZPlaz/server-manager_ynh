@@ -1,0 +1,14 @@
+#:schema https://raw.githubusercontent.com/YunoHost/apps/main/schemas/tests.v1.schema.json
+
+test_format = 1.0
+
+[default]
+
+    # Default install: manage the whole server with full access.
+
+[restricted]
+
+    # Manage a single folder, running as the app's own system user.
+    only = ["install.subdir"]
+    args.root_path = "/var/www"
+    args.full_access = 0

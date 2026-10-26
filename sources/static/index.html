@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Server Manager</title>
+  <link rel="icon" href="static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <button class="icon-btn only-mobile" id="btn-sidebar" title="Show folders"></button>
+    <div class="brand"><span class="brand-logo"></span><span class="brand-name">Server Manager</span></div>
+    <div class="nav">
+      <button class="icon-btn" id="btn-back" title="Back (Alt+Left)"></button>
+      <button class="icon-btn" id="btn-forward" title="Forward (Alt+Right)"></button>
+      <button class="icon-btn" id="btn-up" title="Parent folder (Backspace)"></button>
+      <button class="icon-btn" id="btn-refresh" title="Refresh (F5)"></button>
+      <form class="address" id="address-form" autocomplete="off">
+        <label class="sr-only" for="address">Remote path</label>
+        <input id="address" spellcheck="false" placeholder="/path/to/folder">
+        <button class="icon-btn" id="btn-bookmark" type="button" title="Bookmark this folder"></button>
+      </form>
+      <form class="search" id="search-form" autocomplete="off">
+        <label class="sr-only" for="search">Filter or search</label>
+        <input id="search" type="search" spellcheck="false" placeholder="Filter… (Enter: search subfolders)">
+      </form>
+    </div>
+    <div class="who" id="who"></div>
+  </header>
+
+  <nav class="toolbar" id="toolbar" aria-label="Actions"></nav>
+
+  <main class="panes" id="panes">
+    <aside class="sidebar" id="sidebar">
+      <div class="side-section">
+        <div class="side-title">Bookmarks</div>
+        <ul class="bookmarks" id="bookmarks"></ul>
+      </div>
+      <div class="side-section grow">
+        <div class="side-title">Folders</div>
+        <div class="tree" id="tree" role="tree"></div>
+      </div>
+    </aside>
+    <div class="resizer" id="resizer" title="Drag to resize"></div>
+    <section class="files" id="files">
+      <div class="search-banner hidden" id="search-banner"></div>
+      <div class="table-wrap" id="table-wrap" tabindex="0">
+        <table class="listing" id="listing">
+          <thead>
+            <tr>
+              <th class="c-check"><input type="checkbox" id="check-all" title="Select all"></th>
+              <th class="c-name sortable" data-sort="name">Name</th>
+              <th class="c-size sortable" data-sort="size">Size</th>
+              <th class="c-type sortable" data-sort="type">Type</th>
+              <th class="c-mtime sortable" data-sort="mtime">Last modified</th>
+              <th class="c-perms sortable" data-sort="perms">Permissions</th>
+              <th class="c-owner sortable" data-sort="owner">Owner / Group</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <div class="empty hidden" id="empty">This folder is empty. Drop files here to upload them.</div>
+      </div>
+      <div class="drop-overlay hidden" id="drop-overlay"><div>Drop to upload into <strong id="drop-target"></strong></div></div>
+    </section>
+  </main>
+
+  <section class="bottom" id="bottom">
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-tab="transfers" role="tab">Transfers <span class="badge hidden" id="transfer-count"></span></button>
+      <button class="tab" data-tab="log" role="tab">Message log</button>
+      <span class="spacer"></span>
+      <button class="link-btn" id="btn-clear-transfers">Clear finished</button>
+      <button class="icon-btn small" id="btn-toggle-bottom" title="Hide / show panel"></button>
+    </div>
+    <div class="tab-panel" id="panel-transfers">
+      <div class="transfers" id="transfers"><div class="muted pad">No transfers yet. Upload with the toolbar or drag &amp; drop files onto the list.</div></div>
+    </div>
+    <div class="tab-panel hidden" id="panel-log"><ol class="log" id="log"></ol></div>
+  </section>
+
+  <footer class="statusbar">
+    <span id="status-left"></span>
+    <span id="status-sel"></span>
+    <span class="spacer"></span>
+    <span id="status-disk"></span>
+  </footer>
+
+  <div class="editor hidden" id="editor" role="dialog" aria-modal="true" aria-label="Text editor">
+    <div class="editor-bar">
+      <span class="editor-title" id="editor-title"></span>
+      <span class="editor-meta" id="editor-meta"></span>
+      <span class="spacer"></span>
+      <label class="check"><input type="checkbox" id="editor-wrap"> Wrap lines</label>
+      <button class="btn" id="editor-reload">Reload</button>
+      <button class="btn primary" id="editor-save">Save</button>
+      <button class="btn" id="editor-close">Close</button>
+    </div>
+    <div class="editor-body">
+      <pre class="gutter" id="editor-gutter" aria-hidden="true"></pre>
+      <textarea id="editor-text" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off"></textarea>
+    </div>
+    <div class="editor-status" id="editor-status"></div>
+  </div>
+
+  <div class="context-menu hidden" id="context-menu" role="menu"></div>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <input type="file" id="file-input" multiple hidden>
+  <input type="file" id="folder-input" webkitdirectory multiple hidden>
+
+  <script src="static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+#:schema https://raw.githubusercontent.com/YunoHost/apps/main/schemas/config_panel.v1.schema.json
+
+version = "1.0"
+
+[main]
+name.en = "Server Manager configuration"
+name.fr = "Configuration de Server Manager"
+
+    [main.access]
+    name.en = "Access to the files"
+    name.fr = "Accès aux fichiers"
+
+        [main.access.root_path]
+        ask.en = "Folder to manage"
+        ask.fr = "Dossier à gérer"
+        help.en = "Use / to manage every file of the server. Users of the app can't go above this folder."
+        help.fr = "Utilisez / pour gérer tous les fichiers du serveur. Les utilisateurs de l'app ne peuvent pas remonter au-dessus de ce dossier."
+        type = "string"
+        default = "/"
+
+        [main.access.full_access]
+        ask.en = "Full (root) access"
+        ask.fr = "Accès complet (root)"
+        help.en = "Needed to edit system files such as those in /etc. If disabled, the app runs as its own system user and can only change the files that this user is allowed to change."
+        help.fr = "Nécessaire pour modifier des fichiers système comme ceux de /etc. Si désactivé, l'app tourne avec son propre utilisateur système et ne peut modifier que les fichiers autorisés pour cet utilisateur."
+        type = "boolean"
+        default = true

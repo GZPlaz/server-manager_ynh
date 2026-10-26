@@ -1,0 +1,3 @@
+**Security warning:** with full access enabled (the default), anyone allowed to use this app can read and modify **every file of the server**, which is equivalent to having root access. That's why only the `admins` group can use it after installation and why it can't be opened to visitors. Think twice before allowing other users or groups to access it.
+
+If you only need to manage some files (e.g. a website in `/var/www/mysite`), choose that folder as the folder to manage, and consider disabling full access: the app then runs as its own system user and can only change files that this user is allowed to change.

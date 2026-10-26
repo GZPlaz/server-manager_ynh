@@ -1,0 +1,50 @@
+#!/bin/bash
+
+#=================================================
+# IMPORT GENERIC HELPERS
+#=================================================
+
+source _common.sh
+source /usr/share/yunohost/helpers
+
+#=================================================
+# CHECK THE FOLDER TO MANAGE
+#=================================================
+ynh_script_progression "Checking the folder to manage..."
+
+_validate_root_path
+
+#=================================================
+# DEPLOY THE APPLICATION
+#=================================================
+ynh_script_progression "Setting up source files..."
+
+_install_app_files
+
+#=================================================
+# SYSTEM CONFIGURATION
+#=================================================
+ynh_script_progression "Adding system configurations related to $app..."
+
+_set_run_user
+
+ynh_config_add_nginx
+
+ynh_config_add_systemd
+
+yunohost service add "$app" --description="Web file manager" --log="/var/log/$app/$app.log"
+
+ynh_config_add_logrotate
+
+#=================================================
+# START SYSTEMD SERVICE
+#=================================================
+ynh_script_progression "Starting $app's systemd service..."
+
+ynh_systemctl --service="$app" --action="start" --wait_until="listening on"
+
+#=================================================
+# END OF SCRIPT
+#=================================================
+
+ynh_script_progression "Installation of $app completed"

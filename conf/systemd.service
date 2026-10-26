@@ -1,0 +1,44 @@
+[Unit]
+Description=Server Manager: web file manager
+After=network.target
+
+[Service]
+Type=simple
+User=__RUN_USER__
+Group=__RUN_USER__
+WorkingDirectory=__INSTALL_DIR__/
+Environment="SM_HOST=127.0.0.1"
+Environment="SM_PORT=__PORT__"
+Environment="SM_ROOT=__ROOT_PATH__"
+ExecStart=/usr/bin/python3 -I __INSTALL_DIR__/server.py
+Restart=on-failure
+RestartSec=5
+UMask=0022
+StandardOutput=append:/var/log/__APP__/__APP__.log
+StandardError=inherit
+
+# Sandboxing options to harden security.
+# This service exists to read and write the server's files, so the filesystem
+# protections (ProtectSystem, ProtectHome, PrivateTmp...) are deliberately not
+# used. Everything else that a file manager doesn't need is locked down.
+# Details for these options: https://www.freedesktop.org/software/systemd/man/systemd.exec.html
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=~@clock @debug @module @mount @obsolete @reboot @swap @cpu-emulation @raw-io
+
+# When running as root, only keep the capabilities needed to manage files
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_FSETID
+
+[Install]
+WantedBy=multi-user.target
