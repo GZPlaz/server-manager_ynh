@@ -11,6 +11,7 @@ SSOwat authenticates the user and passes the username in the YNH_USER
 header (and strips any such header coming from the client).
 """
 
+import base64
 import codecs
 import errno
 import fnmatch
@@ -36,7 +37,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 from terminal import TerminalError, TerminalManager, WebSocket, accept_key, clamp
 
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -1082,6 +1083,9 @@ class Handler(BaseHTTPRequestHandler):
             user = self.authenticated_user()
             if method in ("GET", "HEAD") and not path.startswith("/api/"):
                 return self.serve_static(path)
+            if path.startswith("/api/terminal/") and method in ("GET", "POST"):
+                self.check_csrf()
+                return self.send_json(200, self.serve_terminal_http(path, Request(self, user, query)))
             if method == "POST":
                 self.check_csrf()
                 route = self.POST_ROUTES.get(path)
@@ -1171,7 +1175,10 @@ class Handler(BaseHTTPRequestHandler):
                 if ctype.startswith("text/") or ctype in ("application/javascript", "image/svg+xml"):
                     ctype += "; charset=utf-8"
                 with open(full, "rb") as f:
-                    files[name] = (f.read(), ctype)
+                    data = f.read()
+                if name == "index.html":  # versioned URLs, so browsers don't keep old scripts
+                    data = data.replace(b"__VERSION__", quote(VERSION).encode("ascii"))
+                files[name] = (data, ctype)
         cls.static_files = files
 
     # ---- downloads ---------------------------------------------------------
@@ -1228,35 +1235,78 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- terminal ----------------------------------------------------------
 
-    def serve_terminal(self, req):
+    def _terminal_open(self, req, cwd, rows, cols):
         terminal = self.api.terminal
         if not terminal.enabled:
             raise ApiError(403, "The terminal is disabled in the app configuration")
+        real, vpath = self.api.fs.resolve(cwd or "/")
+        if not os.path.isdir(real):
+            real, vpath = self.api.fs.root, "/"
+        try:
+            session = terminal.open(req.user, real, clamp(rows, 2, 500, 24), clamp(cols, 2, 1000, 80))
+        except TerminalError as exc:
+            raise ApiError(503, str(exc))
+        req.audit("terminal-open", f"session {session.id.split('-')[0]} in {vpath} ({terminal.mode})")
+        return session
+
+    def _terminal_closed(self, req, session):
+        self.api.terminal.close(session)
+        req.audit("terminal-close", f"session {session.id.split('-')[0]} after "
+                                    f"{int(time.monotonic() - session.started)}s")
+
+    def serve_terminal(self, req):
+        """Terminal over a WebSocket."""
         key = self.headers.get("Sec-WebSocket-Key")
         if self.headers.get("Upgrade", "").lower() != "websocket" or not key:
             raise ApiError(400, "WebSocket connection expected")
         # Browsers send cookies with WebSockets from any site: the origin must match.
         if not self.same_origin():
             raise ApiError(403, "Cross-origin request refused")
-        real, vpath = self.api.fs.resolve(req.arg("cwd", "/"))
-        if not os.path.isdir(real):
-            real, vpath = self.api.fs.root, "/"
-        rows = clamp(req.arg("rows"), 2, 500, 24)
-        cols = clamp(req.arg("cols"), 2, 1000, 80)
-        try:
-            session = terminal.open(req.user, real, rows, cols)
-        except TerminalError as exc:
-            raise ApiError(503, str(exc))
+        if not self.api.terminal.enabled:
+            raise ApiError(403, "The terminal is disabled in the app configuration")
+        session = self._terminal_open(req, req.arg("cwd"), req.arg("rows"), req.arg("cols"))
         self.wfile.write((
             "HTTP/1.1 101 Switching Protocols\r\n"
             "Upgrade: websocket\r\n"
             "Connection: Upgrade\r\n"
             f"Sec-WebSocket-Accept: {accept_key(key)}\r\n\r\n").encode("ascii"))
         self.close_connection = True
-        req.audit("terminal-open", f"session {session.id} in {vpath}")
-        terminal.run(WebSocket(self.rfile, self.connection), session)
-        req.audit("terminal-close", f"session {session.id} after "
-                                    f"{int(time.monotonic() - session.started)}s")
+        self.api.terminal.run_websocket(WebSocket(self.rfile, self.connection), session)
+        self._terminal_closed(req, session)
+
+    def serve_terminal_http(self, path, req):
+        """Terminal over plain HTTP requests, for when WebSockets don't get through."""
+        terminal = self.api.terminal
+        action = path[len("/api/terminal/"):]
+        if action == "open":
+            body = req.json()
+            session = self._terminal_open(req, body.get("cwd"), body.get("rows"), body.get("cols"))
+            session.transport = "http"
+            return {"id": session.id, "mode": terminal.mode}
+        if action == "read":
+            sid = req.arg("id")
+            wait = min(max(float(req.arg("wait", "25") or 25), 0), 50)
+        else:
+            body = req.json()
+            sid = body.get("id")
+        try:
+            session = terminal.get(sid, req.user)
+        except TerminalError as exc:
+            raise ApiError(410, str(exc), code="ended")
+        if action == "read":
+            data, ended = session.take(wait)
+            session.last_seen = time.monotonic()
+            if ended:
+                self._terminal_closed(req, session)
+            return {"data": base64.b64encode(data).decode("ascii"), "ended": ended}
+        if action == "send":
+            for msg in body.get("messages") or []:
+                terminal.handle_message(session, msg)
+            return {"ok": True}
+        if action == "close":
+            self._terminal_closed(req, session)
+            return {"ok": True}
+        raise ApiError(404, "Not found")
 
     def serve_raw(self, req):
         real, vpath = self.api.fs.resolve(req.arg("path"))
@@ -1295,6 +1345,7 @@ def main():
         log.error("Root folder %s does not exist", root)
         sys.exit(1)
 
+    terminal.self_test()
     Handler.api = Api(FileSystem(root, inherit_owner=inherit_owner), terminal)
     Handler.user_header = os.environ.get("SM_USER_HEADER", "YNH_USER")
     Handler.load_static()

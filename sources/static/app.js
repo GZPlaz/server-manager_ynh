@@ -49,6 +49,14 @@
     open: '<path d="M5 12h14M13 6l6 6-6 6"/>',
     terminal: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/>',
     maximize: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
+    save: '<path d="M5 3h11l3 3v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z"/><path d="M8 3v5h7V3M8 21v-7h8v7"/>',
+    undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
+    redo: '<path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h3"/>',
+    replace: '<path d="M4 7h11l-3-3M20 17H9l3 3"/>',
+    goto: '<path d="M4 6h10M4 12h16M4 18h10"/><path d="M17 4l3 2-3 2"/>',
+    comment: '<path d="M7 4L5 20M15 4l-2 16M4 9h16M3 15h16"/>',
+    wrap: '<path d="M4 6h16M4 12h13a3 3 0 0 1 0 6h-4"/><path d="M15 16l-2 2 2 2M4 18h5"/>',
+    code: '<path d="M8 7l-5 5 5 5M16 7l5 5-5 5M13 5l-2 14"/>',
   };
 
   function icon(name) {
@@ -645,7 +653,8 @@
     { id: 'upload-folder', icon: 'uploadFolder', label: 'Upload folder', enabled: (c) => c.browsing, run: () => $('folder-input').click() },
     { id: 'download', icon: 'download', label: 'Download', enabled: (c) => c.any && c.sel.every((e) => e.type !== 'special' && e.target_type !== 'broken'), run: () => downloadPaths(selectedEntries().map((e) => e.path)) },
     'sep',
-    { id: 'edit', icon: 'edit', label: 'Edit', title: 'Edit file (Enter)', enabled: (c) => c.one && isFileLike(c.one), run: () => openEntry(ctx().one, true) },
+    { id: 'edit', icon: 'edit', label: 'Edit', title: 'Edit the selected file (Enter)', enabled: (c) => c.one && isFileLike(c.one), run: () => openEntry(ctx().one, true) },
+    { id: 'editor', icon: 'code', label: 'Editor', title: 'Open the code editor', enabled: () => true, run: () => showEditor() },
     { id: 'rename', icon: 'rename', label: 'Rename', title: 'Rename (F2)', enabled: (c) => !!c.one, run: () => renameEntry(ctx().one) },
     { id: 'copy', icon: 'copy', label: 'Copy', title: 'Copy (Ctrl+C)', enabled: (c) => c.any, run: () => setClipboard('copy') },
     { id: 'cut', icon: 'cut', label: 'Cut', title: 'Cut (Ctrl+X)', enabled: (c) => c.any, run: () => setClipboard('cut') },
@@ -684,6 +693,7 @@
       if (a === 'sep') continue;
       if (a.toggle) a.el.classList.toggle('on', S.showHidden);
       else a.el.disabled = !a.enabled(c);
+      if (a.id === 'editor') a.el.querySelector('.label').textContent = ED.tabs.length ? `Editor (${ED.tabs.length})` : 'Editor';
     }
     $('btn-up').disabled = S.cwd === '/' && !S.search;
     const bm = bookmarks();
@@ -1452,15 +1462,30 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Editor
+  // Editor: a code editor (CodeMirror 5) with tabs, syntax highlighting,
+  // find & replace. If CodeMirror can't load, a plain text area is used.
   // ---------------------------------------------------------------------------
 
-  const E = { path: null, encoding: 'utf-8', eol: 'lf', mtime: null, original: '', indent: '    ', lines: 0 };
-  const ta = () => $('editor-text');
+  const LANGUAGES = [
+    ['text/plain', 'Plain text'], ['text/x-sh', 'Shell'], ['text/x-nginx-conf', 'Nginx'],
+    ['text/x-yaml', 'YAML'], ['application/json', 'JSON'], ['text/x-properties', 'INI / config'],
+    ['text/x-toml', 'TOML'], ['text/javascript', 'JavaScript'], ['text/x-python', 'Python'],
+    ['application/x-httpd-php', 'PHP'], ['text/html', 'HTML'], ['text/css', 'CSS'],
+    ['application/xml', 'XML'], ['text/x-sql', 'SQL'], ['text/x-markdown', 'Markdown'],
+    ['text/x-dockerfile', 'Dockerfile'], ['text/x-diff', 'Diff'], ['text/x-lua', 'Lua'],
+    ['text/x-go', 'Go'], ['text/x-rustsrc', 'Rust'], ['text/x-ruby', 'Ruby'], ['text/x-perl', 'Perl'],
+    ['text/jinja2', 'Jinja2'], ['text/x-cmake', 'CMake'],
+  ];
+  const LANGUAGE_NAME = new Map(LANGUAGES);
 
-  function editorOpen() {
-    return !$('editor').classList.contains('hidden');
-  }
+  const ED = {
+    engine: null,
+    loading: null,
+    tabs: [],
+    active: null,
+    wrap: store.get('wrap', false),
+    fontSize: store.get('editorFont', 13),
+  };
 
   function detectIndent(text) {
     let tabs = 0;
@@ -1480,10 +1505,200 @@
     return two > spaces * 0.2 ? '  ' : '    ';
   }
 
+  // Pick the syntax highlighting from the file name or its first line
+  function detectLanguage(path, text) {
+    const name = baseName(path).toLowerCase();
+    const first = text.slice(0, 200).split('\n')[0];
+    if (/^#!.*\b(ba|z|da|k)?sh\b/.test(first)) return 'text/x-sh';
+    if (/^#!.*python/.test(first)) return 'text/x-python';
+    if (/^#!.*(node|deno)/.test(first)) return 'text/javascript';
+    if (/^#!.*perl/.test(first)) return 'text/x-perl';
+    if (/^<\?php/.test(first)) return 'application/x-httpd-php';
+    if ((/\/nginx\//.test(path) && /\.(conf|inc)$/.test(name)) || /^nginx.*\.conf$/.test(name)) return 'text/x-nginx-conf';
+    if (/\.(service|timer|socket|mount|target|path|network|netdev|ini|cfg|cnf|conf|env|properties|desktop)$/.test(name)
+      || /^\.env(\..*)?$/.test(name) || /^(sshd_config|ssh_config|php\.ini|my\.cnf)$/.test(name)) return 'text/x-properties';
+    if (/^(\.?bashrc|\.?profile|\.bash_\w+|\.zshrc|crontab)$/.test(name) || /\/cron\.d\//.test(path)) return 'text/x-sh';
+    if (/^dockerfile(\..*)?$/.test(name)) return 'text/x-dockerfile';
+    if (/\.(ya?ml)$/.test(name)) return 'text/x-yaml';
+    if (/\.json$/.test(name)) return 'application/json';
+    if (window.CodeMirror && CodeMirror.findModeByFileName) {
+      const info = CodeMirror.findModeByFileName(name);
+      if (info && info.mode !== 'null' && CodeMirror.modes[info.mode]) return info.mime || (info.mimes && info.mimes[0]) || info.mode;
+    }
+    return 'text/plain';
+  }
+
+  function loadCodeMirror() {
+    if (!ED.loading) {
+      ED.loading = Promise.all([
+        loadAsset('link', { rel: 'stylesheet', href: assetUrl('static/vendor/codemirror/codemirror-bundle.css') }),
+        loadAsset('script', { src: assetUrl('static/vendor/codemirror/codemirror-bundle.js') }),
+      ]).catch(() => null);
+    }
+    return ED.loading;
+  }
+
+  const darkScheme = window.matchMedia('(prefers-color-scheme: dark)');
+
+  // CodeMirror engine: one editor, one document per tab
+  function codeMirrorEngine(container) {
+    const indentUnitOf = (tab) => (tab && tab.indent !== '\t' ? tab.indent.length : 4);
+    const cm = CodeMirror(container, {
+      value: '',
+      lineNumbers: true,
+      matchBrackets: true,
+      styleActiveLine: true,
+      lineWrapping: ED.wrap,
+      tabSize: 4,
+      indentUnit: 4,
+      theme: darkScheme.matches ? 'material-darker' : 'default',
+      inputStyle: 'contenteditable',
+      spellcheck: false,
+      autocorrect: false,
+      autocapitalize: false,
+      extraKeys: {
+        Tab: (ed) => {
+          if (ed.somethingSelected()) ed.indentSelection('add');
+          else ed.replaceSelection(ed.getOption('indentWithTabs') ? '\t' : ' '.repeat(ed.getOption('indentUnit')), 'end');
+        },
+        'Shift-Tab': 'indentLess',
+        'Ctrl-/': 'toggleComment',
+        'Cmd-/': 'toggleComment',
+      },
+    });
+    const listen = (fn) => (darkScheme.addEventListener ? darkScheme.addEventListener('change', fn) : darkScheme.addListener(fn));
+    listen(() => cm.setOption('theme', darkScheme.matches ? 'material-darker' : 'default'));
+    cm.on('cursorActivity', updateEditorStatus);
+    cm.on('changes', updateDirtyState);
+    return {
+      basic: false,
+      newDoc: (text, mode) => CodeMirror.Doc(text, mode),
+      show(tab) {
+        cm.swapDoc(tab.doc);
+        cm.setOption('indentWithTabs', tab.indent === '\t');
+        cm.setOption('indentUnit', indentUnitOf(tab));
+        cm.refresh();
+      },
+      value: (tab) => tab.doc.getValue(),
+      setValue(tab, text) { tab.doc.setValue(text); tab.doc.clearHistory(); },
+      markClean(tab) { tab.gen = tab.doc.changeGeneration(true); },
+      isDirty: (tab) => !tab.doc.isClean(tab.gen),
+      setMode(tab, mode) { tab.mode = mode; if (tab === ED.active) cm.setOption('mode', mode); else tab.doc.modeOption = mode; },
+      cursor() {
+        const c = cm.getCursor();
+        return { line: c.line + 1, col: c.ch + 1, lines: cm.lineCount() };
+      },
+      exec(command) { cm.focus(); cm.execCommand(command); },
+      setWrap(on) { cm.setOption('lineWrapping', on); },
+      setFont(px) { cm.getWrapperElement().style.fontSize = px + 'px'; cm.refresh(); },
+      focus() { cm.focus(); },
+      refresh() { cm.refresh(); },
+      dialogOpen: () => !!container.querySelector('.CodeMirror-dialog'),
+    };
+  }
+
+  // Fallback engine: a plain text area
+  function textareaEngine(container) {
+    const ta = h('textarea', { class: 'ed-fallback', spellcheck: 'false', autocapitalize: 'off', autocomplete: 'off', wrap: 'off' });
+    container.append(ta);
+    let shown = null;
+    ta.addEventListener('input', () => { if (shown) shown.doc.text = ta.value; updateDirtyState(); updateEditorStatus(); });
+    ta.addEventListener('keyup', updateEditorStatus);
+    ta.addEventListener('click', updateEditorStatus);
+    ta.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Tab' && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+        ev.preventDefault();
+        const unit = shown && shown.indent === '\t' ? '\t' : (shown ? shown.indent : '    ');
+        if (!document.execCommand('insertText', false, unit)) ta.setRangeText(unit, ta.selectionStart, ta.selectionEnd, 'end');
+        if (shown) shown.doc.text = ta.value;
+        updateDirtyState();
+      }
+    });
+    return {
+      basic: true,
+      newDoc: (text) => ({ text, clean: text }),
+      show(tab) {
+        if (shown) shown.doc.text = ta.value;
+        shown = tab;
+        ta.value = tab.doc.text;
+        ta.scrollTop = 0;
+      },
+      value: (tab) => (tab === shown ? ta.value : tab.doc.text),
+      setValue(tab, text) { tab.doc.text = text; if (tab === shown) ta.value = text; },
+      markClean(tab) { tab.doc.clean = tab === shown ? ta.value : tab.doc.text; },
+      isDirty: (tab) => (tab === shown ? ta.value : tab.doc.text) !== tab.doc.clean,
+      setMode(tab, mode) { tab.mode = mode; },
+      cursor() {
+        const before = ta.value.slice(0, ta.selectionStart);
+        return { line: before.split('\n').length, col: ta.selectionStart - before.lastIndexOf('\n'), lines: ta.value.split('\n').length };
+      },
+      exec() {},
+      setWrap(on) { ta.classList.toggle('wrap', on); ta.setAttribute('wrap', on ? 'soft' : 'off'); },
+      setFont(px) { ta.style.fontSize = px + 'px'; },
+      focus() { ta.focus(); },
+      refresh() {},
+      dialogOpen: () => false,
+    };
+  }
+
+  async function ensureEditorEngine() {
+    if (ED.engine) return ED.engine;
+    await loadCodeMirror();
+    const body = $('ed-body');
+    if (typeof window.CodeMirror === 'function') {
+      try {
+        ED.engine = codeMirrorEngine(body);
+      } catch (err) {
+        ED.engine = null;
+      }
+    }
+    if (!ED.engine) {
+      ED.engine = textareaEngine(body);
+      $('editor').classList.add('basic');
+      logMsg('info', 'Editor: using the basic text editor (the code editor could not load in this browser)');
+    }
+    ED.engine.setFont(ED.fontSize);
+    ED.engine.setWrap(ED.wrap);
+    return ED.engine;
+  }
+
+  function editorOpen() {
+    return !$('editor').classList.contains('hidden');
+  }
+
+  function editorDirty() {
+    return ED.engine ? ED.tabs.some((t) => ED.engine.isDirty(t)) : false;
+  }
+
+  async function showEditor() {
+    $('editor').classList.remove('hidden');
+    await ensureEditorEngine();
+    renderEditor();
+    if (ED.active) {
+      ED.engine.refresh();
+      ED.engine.focus();
+    }
+  }
+
+  function hideEditor() {
+    $('editor').classList.add('hidden');
+    updateToolbar();
+    if (S.cwd !== null) load(S.cwd);
+  }
+
+  // Kept for the existing keyboard shortcut: Esc goes back to the files
+  const closeEditor = hideEditor;
+
   async function openEditor(path) {
+    const existing = ED.tabs.find((t) => t.path === path);
+    if (existing) {
+      await showEditor();
+      activateTab(existing);
+      return;
+    }
     let d;
     try {
-      d = await api('GET', 'read', { params: { path } });
+      [d] = await Promise.all([api('GET', 'read', { params: { path } }), ensureEditorEngine()]);
     } catch (err) {
       if (err.data && err.data.code === 'binary') {
         const ok = await confirmBox('Binary file', `${baseName(path)} is not a text file and can't be edited here. Download it instead?`, 'Download');
@@ -1493,170 +1708,211 @@
       }
       return;
     }
-    Object.assign(E, { path: d.path, encoding: d.encoding, eol: d.eol, mtime: d.mtime_ns, original: d.content, indent: detectIndent(d.content), lines: 0 });
-    const t = ta();
-    t.value = d.content;
-    t.readOnly = false;
-    $('editor-title').textContent = d.path;
-    const meta = $('editor-meta');
-    meta.replaceChildren(`${d.encoding === 'utf-8-sig' ? 'UTF-8 with BOM' : d.encoding.toUpperCase()} · ${d.eol.toUpperCase()} · ${fmtSize(d.size)}`);
-    if (!d.writable) meta.append(' · ', h('span', { class: 'ro', text: 'read-only' }));
-    $('editor').classList.remove('hidden');
-    updateEditorState();
-    updateGutter();
-    t.scrollTop = 0;
-    t.scrollLeft = 0;
-    t.setSelectionRange(0, 0);
-    t.focus();
+    const mode = detectLanguage(d.path, d.content);
+    const tab = {
+      path: d.path,
+      encoding: d.encoding,
+      eol: d.eol,
+      mtime: d.mtime_ns,
+      size: d.size,
+      writable: d.writable,
+      indent: detectIndent(d.content),
+      mode,
+      doc: ED.engine.newDoc(d.content, mode),
+    };
+    ED.engine.markClean(tab);
+    ED.tabs.push(tab);
     logMsg('info', `Opened ${d.path} in the editor`);
+    await showEditor();
+    activateTab(tab);
   }
 
-  function editorDirty() {
-    return editorOpen() && ta().value !== E.original;
+  function activateTab(tab) {
+    ED.active = tab;
+    ED.engine.show(tab);
+    renderEditor();
+    ED.engine.focus();
   }
 
-  function updateEditorState() {
-    const t = ta();
-    $('editor-title').classList.toggle('dirty', editorDirty());
-    const before = t.value.slice(0, t.selectionStart);
-    const line = before.split('\n').length;
-    const col = t.selectionStart - before.lastIndexOf('\n');
-    $('editor-status').textContent = `Line ${line}, column ${col} · ${E.lines} lines · Indent: ${E.indent === '\t' ? 'tab' : E.indent.length + ' spaces'} · Ctrl+S to save, Esc to close`;
+  async function closeTab(tab) {
+    if (ED.engine.isDirty(tab)
+      && !(await confirmBox('Unsaved changes', `Close ${baseName(tab.path)} and discard your changes?`, 'Discard', true))) return;
+    const i = ED.tabs.indexOf(tab);
+    ED.tabs.splice(i, 1);
+    if (ED.active === tab) {
+      ED.active = ED.tabs[Math.min(i, ED.tabs.length - 1)] || null;
+      if (ED.active) ED.engine.show(ED.active);
+    }
+    renderEditor();
+    if (ED.active) ED.engine.focus();
   }
 
-  function updateGutter() {
-    const count = ta().value.split('\n').length;
-    if (count === E.lines) return;
-    E.lines = count;
-    let s = '';
-    for (let i = 1; i <= count; i++) s += i + '\n';
-    $('editor-gutter').textContent = s;
-    syncGutter();
+  function renderEditor() {
+    const editor = $('editor');
+    editor.classList.toggle('no-file', !ED.active);
+    const tabs = $('ed-tabs');
+    tabs.replaceChildren(...ED.tabs.map((tab) => {
+      const el = h('div', {
+        class: 'ed-tab' + (tab === ED.active ? ' active' : '') + (ED.engine.isDirty(tab) ? ' dirty' : ''),
+        role: 'tab',
+        title: tab.path,
+        onclick: () => { if (tab !== ED.active) activateTab(tab); },
+      }, h('span', { class: 'ed-tab-name', text: baseName(tab.path) }),
+      h('button', { class: 'icon-btn', type: 'button', title: 'Close', onclick: (ev) => { ev.stopPropagation(); closeTab(tab); } }, icon('x')));
+      return el;
+    }));
+    const active = tabs.querySelector('.active');
+    if (active && active.scrollIntoView) active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    if (ED.active) $('ed-lang').value = ED.active.mode;
+    $('ed-wrap').classList.toggle('on', ED.wrap);
+    updateEditorStatus();
+    updateToolbar();
   }
 
-  function syncGutter() {
-    $('editor-gutter').scrollTop = ta().scrollTop;
+  function updateDirtyState() {
+    const tabEls = $('ed-tabs').children;
+    ED.tabs.forEach((tab, i) => { if (tabEls[i]) tabEls[i].classList.toggle('dirty', ED.engine.isDirty(tab)); });
   }
 
-  async function saveEditor(force = false) {
-    if (!E.path) return;
-    const content = ta().value;
+  function updateEditorStatus() {
+    const tab = ED.active;
+    const status = $('ed-status');
+    if (!tab || !ED.engine) {
+      status.replaceChildren();
+      return;
+    }
+    const c = ED.engine.cursor();
+    const parts = [
+      `Line ${c.line}, column ${c.col}`,
+      `${c.lines} lines`,
+      LANGUAGE_NAME.get(tab.mode) || tab.mode,
+      tab.encoding === 'utf-8-sig' ? 'UTF-8 with BOM' : tab.encoding.toUpperCase(),
+      tab.eol.toUpperCase(),
+      tab.indent === '\t' ? 'Tabs' : `Spaces: ${tab.indent.length}`,
+    ];
+    status.replaceChildren(...parts.map((p) => h('span', { text: p })), h('span', { class: 'spacer' }), h('span', { text: tab.path }));
+    if (!tab.writable) status.prepend(h('span', { class: 'ro', text: 'Read-only' }));
+  }
+
+  async function saveEditor(force = false, tab = ED.active) {
+    if (!tab) return false;
+    const content = ED.engine.value(tab);
     try {
       const r = await api('POST', 'write', {
-        body: { path: E.path, content, encoding: E.encoding, eol: E.eol, expected_mtime_ns: E.mtime, force },
+        body: { path: tab.path, content, encoding: tab.encoding, eol: tab.eol, expected_mtime_ns: tab.mtime, force },
       });
-      E.mtime = r.mtime_ns;
-      E.original = content;
-      updateEditorState();
-      toast(`Saved ${baseName(E.path)}`, 'ok');
-      logMsg('ok', `Saved ${E.path} (${fmtSize(r.size)})`);
+      tab.mtime = r.mtime_ns;
+      tab.size = r.size;
+      // Only mark as saved what was actually sent (the user may have typed meanwhile)
+      if (ED.engine.value(tab) === content) ED.engine.markClean(tab);
+      updateDirtyState();
+      toast(`Saved ${baseName(tab.path)}`, 'ok');
+      logMsg('ok', `Saved ${tab.path} (${fmtSize(r.size)})`);
+      return true;
     } catch (err) {
       if (err.status === 409 && err.data.code === 'modified') {
         const ok = await confirmBox('File changed on the server',
-          'This file was modified on the server after you opened it. Overwrite those changes with your version?', 'Overwrite', true);
-        if (ok) return saveEditor(true);
-        return;
+          `${baseName(tab.path)} was modified on the server after you opened it. Overwrite those changes with your version?`, 'Overwrite', true);
+        if (ok) return saveEditor(true, tab);
+        return false;
       }
       fail(err, 'Could not save');
+      return false;
     }
   }
 
-  async function closeEditor() {
-    if (editorDirty() && !(await confirmBox('Unsaved changes', 'Close the editor and discard your changes?', 'Discard', true))) {
-      ta().focus();
-      return;
+  async function reloadTab(tab = ED.active) {
+    if (!tab) return;
+    if (ED.engine.isDirty(tab)
+      && !(await confirmBox('Unsaved changes', 'Reload the file from the server and discard your changes?', 'Reload', true))) return;
+    try {
+      const d = await api('GET', 'read', { params: { path: tab.path } });
+      Object.assign(tab, { encoding: d.encoding, eol: d.eol, mtime: d.mtime_ns, size: d.size, writable: d.writable });
+      ED.engine.setValue(tab, d.content);
+      ED.engine.markClean(tab);
+      renderEditor();
+      toast(`Reloaded ${baseName(tab.path)}`);
+    } catch (err) {
+      fail(err, 'Could not reload');
     }
-    $('editor').classList.add('hidden');
-    E.path = null;
-    ta().value = '';
-    if (S.cwd !== null) load(S.cwd);
   }
 
-  async function reloadEditor() {
-    if (editorDirty() && !(await confirmBox('Unsaved changes', 'Reload the file from the server and discard your changes?', 'Reload', true))) return;
-    openEditor(E.path);
-  }
-
-  function insertText(t, text) {
-    t.focus();
-    // execCommand keeps the browser's undo history working.
-    if (!document.execCommand('insertText', false, text)) {
-      t.setRangeText(text, t.selectionStart, t.selectionEnd, 'end');
+  async function openByPath() {
+    const start = S.cwd && S.cwd !== '/' ? S.cwd + '/' : '/';
+    const path = await promptBox('Open a file', 'Path of the file to edit (it is created if it doesn\'t exist)', start, { okLabel: 'Open' });
+    if (!path) return;
+    const full = path.startsWith('/') ? path : joinPath(S.cwd || '/', path);
+    try {
+      const st = await api('GET', 'stat', { params: { path: full } });
+      if (!st.exists) {
+        if (!(await confirmBox('New file', `${full} doesn't exist. Create it?`, 'Create'))) return;
+        await api('POST', 'touch', { body: { path: full } });
+        logMsg('ok', `Created file ${full}`);
+      } else if (st.type === 'dir' || st.target_type === 'dir') {
+        toast(`${full} is a folder`, 'error');
+        return;
+      }
+      await openEditor(full);
+    } catch (err) {
+      fail(err, 'Could not open the file');
     }
-    onEditorInput();
   }
 
-  function indentSelection(t, outdent) {
-    const v = t.value;
-    const s = t.selectionStart;
-    const e = t.selectionEnd;
-    const multi = v.slice(s, e).includes('\n');
-    if (!outdent && !multi) {
-      insertText(t, E.indent);
-      return;
-    }
-    const ls = v.lastIndexOf('\n', s - 1) + 1;
-    let le = v.indexOf('\n', e > s && v[e - 1] === '\n' ? e - 1 : e);
-    if (le === -1) le = v.length;
-    const lines = v.slice(ls, le).split('\n');
-    const width = E.indent === '\t' ? 4 : E.indent.length;
-    const out = lines.map((l) => {
-      if (!outdent) return l.length ? E.indent + l : l;
-      if (l.startsWith('\t')) return l.slice(1);
-      const m = new RegExp(`^ {1,${width}}`).exec(l);
-      return m ? l.slice(m[0].length) : l;
-    }).join('\n');
-    t.setSelectionRange(ls, le);
-    insertText(t, out);
-    t.setSelectionRange(ls, ls + out.length);
-  }
-
-  function onEditorInput() {
-    updateGutter();
-    updateEditorState();
+  function changeFont(delta) {
+    ED.fontSize = Math.max(9, Math.min(28, ED.fontSize + delta));
+    store.set('editorFont', ED.fontSize);
+    if (ED.engine) ED.engine.setFont(ED.fontSize);
   }
 
   function setupEditor() {
-    const t = ta();
-    const wrap = store.get('wrap', false);
-    $('editor-wrap').checked = wrap;
-    $('editor').classList.toggle('wrap', wrap);
-    t.setAttribute('wrap', wrap ? 'soft' : 'off');
-    $('editor-wrap').addEventListener('change', (ev) => {
-      const on = ev.target.checked;
-      store.set('wrap', on);
-      $('editor').classList.toggle('wrap', on);
-      t.setAttribute('wrap', on ? 'soft' : 'off');
-    });
-    t.addEventListener('input', onEditorInput);
-    t.addEventListener('scroll', syncGutter);
-    t.addEventListener('click', updateEditorState);
-    t.addEventListener('keyup', updateEditorState);
-    t.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Tab' && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
-        ev.preventDefault();
-        indentSelection(t, ev.shiftKey);
-      } else if (ev.key === 'Enter' && !ev.ctrlKey && !ev.altKey && !ev.metaKey && !ev.shiftKey) {
-        const v = t.value;
-        const ls = v.lastIndexOf('\n', t.selectionStart - 1) + 1;
-        const before = v.slice(ls, t.selectionStart);
-        const ws = /^[ \t]*/.exec(before)[0];
-        // One more level after an opening bracket or a trailing colon (YAML, Python…)
-        const extra = /[{[(:]\s*$/.test(before) ? E.indent : '';
-        ev.preventDefault();
-        insertText(t, '\n' + ws + extra);
+    const tool = (id, iconName, label, title, run, cls = '') => h('button', {
+      class: 'tool ' + cls, type: 'button', id, title, onclick: run,
+    }, iconName ? icon(iconName) : null, h('span', { class: 'label', text: label }));
+    const sep = () => h('span', { class: 'tool-sep' });
+    const lang = h('select', { id: 'ed-lang', title: 'Syntax highlighting', class: 'cm-only' },
+      ...LANGUAGES.map(([value, label]) => h('option', { value, text: label })));
+    lang.addEventListener('change', () => {
+      if (ED.active) {
+        ED.engine.setMode(ED.active, lang.value);
+        updateEditorStatus();
       }
     });
-    $('editor-save').addEventListener('click', () => saveEditor());
-    $('editor-close').addEventListener('click', closeEditor);
-    $('editor-reload').addEventListener('click', reloadEditor);
+    $('ed-tools').append(
+      tool('ed-save', 'save', 'Save', 'Save (Ctrl+S)', () => saveEditor(), 'primary-tool'),
+      sep(),
+      tool('ed-undo', 'undo', 'Undo', 'Undo (Ctrl+Z)', () => ED.engine.exec('undo'), 'cm-only'),
+      tool('ed-redo', 'redo', 'Redo', 'Redo (Ctrl+Y)', () => ED.engine.exec('redo'), 'cm-only'),
+      tool('ed-find', 'search', 'Find', 'Find (Ctrl+F), then Enter for the next match', () => ED.engine.exec('findPersistent'), 'cm-only'),
+      tool('ed-replace', 'replace', 'Replace', 'Find and replace (Shift+Ctrl+F)', () => ED.engine.exec('replace'), 'cm-only'),
+      tool('ed-goto', 'goto', 'Go to line', 'Go to line (Alt+G)', () => ED.engine.exec('jumpToLine'), 'cm-only'),
+      tool('ed-comment', 'comment', 'Comment', 'Comment / uncomment the selected lines (Ctrl+/)', () => ED.engine.exec('toggleComment'), 'cm-only'),
+      sep(),
+      tool('ed-wrap', 'wrap', 'Wrap', 'Wrap long lines', () => {
+        ED.wrap = !ED.wrap;
+        store.set('wrap', ED.wrap);
+        ED.engine.setWrap(ED.wrap);
+        $('ed-wrap').classList.toggle('on', ED.wrap);
+      }, 'toggle'),
+      tool('ed-smaller', null, 'A−', 'Smaller text', () => changeFont(-1)),
+      tool('ed-bigger', null, 'A+', 'Bigger text', () => changeFont(1)),
+      lang,
+      sep(),
+      tool('ed-reload', 'refresh', 'Reload', 'Reload the file from the server', () => reloadTab()),
+      tool('ed-download', 'download', 'Download', 'Download this file', () => ED.active && downloadPaths([ED.active.path])),
+    );
+    $('ed-files').addEventListener('click', hideEditor);
+    $('ed-open').addEventListener('click', openByPath);
+    $('ed-empty-open').addEventListener('click', openByPath);
   }
 
   // ---------------------------------------------------------------------------
-  // Terminal (shell over a WebSocket, rendered with xterm.js)
+  // Terminal: a shell on the server, rendered with xterm.js.
+  // The connection uses a WebSocket, or plain HTTP requests when WebSockets
+  // don't get through (proxies, some browsers). If xterm.js can't run in the
+  // browser, a simple text view is used instead.
   // ---------------------------------------------------------------------------
 
-  const T = { term: null, fit: null, ws: null, connected: false, ctrl: false, loading: null, keepalive: null, opening: false };
+  const T = { term: null, fit: null, conn: null, connected: false, ctrl: false, loading: null, opening: false, simple: false };
 
   const shellQuote = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 
@@ -1668,6 +1924,8 @@
   }
 
   const cdCommand = (p) => ({ type: 'input', data: `cd ${shellQuote(systemPath(p))}\r` });
+
+  const assetUrl = (path) => `${path}?v=${encodeURIComponent((S.info && S.info.version) || '')}`;
 
   function loadAsset(tag, attrs) {
     return new Promise((resolve, reject) => {
@@ -1682,11 +1940,10 @@
   function ensureXterm() {
     if (!T.loading) {
       T.loading = Promise.all([
-        loadAsset('link', { rel: 'stylesheet', href: 'static/vendor/xterm/xterm.css' }),
-        loadAsset('script', { src: 'static/vendor/xterm/xterm.js' })
-          .then(() => loadAsset('script', { src: 'static/vendor/xterm/addon-fit.js' })),
+        loadAsset('link', { rel: 'stylesheet', href: assetUrl('static/vendor/xterm/xterm.css') }),
+        loadAsset('script', { src: assetUrl('static/vendor/xterm/xterm.js') })
+          .then(() => loadAsset('script', { src: assetUrl('static/vendor/xterm/addon-fit.js') })),
       ]);
-      T.loading.catch(() => { T.loading = null; });
     }
     return T.loading;
   }
@@ -1694,6 +1951,7 @@
   function termStatus(text, cls = '') {
     const el = $('term-status');
     el.textContent = text;
+    el.title = text;
     el.className = 'term-status' + (cls ? ' ' + cls : '');
     $('term-dot').classList.toggle('hidden', !T.connected);
   }
@@ -1709,7 +1967,7 @@
   }
 
   function termSend(obj) {
-    if (T.ws && T.ws.readyState === WebSocket.OPEN) T.ws.send(JSON.stringify(obj));
+    if (T.conn && T.connected) T.conn.send(obj);
   }
 
   function termInput(data) {
@@ -1717,6 +1975,11 @@
       const code = data.toUpperCase().charCodeAt(0);
       if (code >= 64 && code <= 95) data = String.fromCharCode(code - 64);
       setCtrl(false);
+    }
+    if (!T.connected) {
+      // Enter on a closed session starts a new one
+      if (data === '\r' && !T.conn) connectTerminal(S.cwd);
+      return;
     }
     termSend({ type: 'input', data });
   }
@@ -1727,7 +1990,86 @@
     if (btn) btn.classList.toggle('on', on);
   }
 
+  // Plain text terminal view, used when xterm.js can't run in this browser.
+  // It understands the basics (new lines, carriage returns, backspace, clear
+  // screen) and ignores colors and cursor movements.
+  class SimpleTerm {
+    constructor(container) {
+      this.el = h('pre', { class: 'simple-term', tabindex: '0' });
+      container.replaceChildren(this.el);
+      this.decoder = typeof TextDecoder === 'function' ? new TextDecoder() : null;
+      this.handlers = [];
+      this.cols = 80;
+      this.rows = 24;
+      this.reset();
+      this.el.addEventListener('keydown', (ev) => {
+        const keys = { Enter: '\r', Backspace: '\x7f', Tab: '\t', Escape: '\x1b', ArrowUp: '\x1b[A', ArrowDown: '\x1b[B', ArrowRight: '\x1b[C', ArrowLeft: '\x1b[D' };
+        let data = keys[ev.key];
+        if (!data && ev.ctrlKey && ev.key.length === 1) data = String.fromCharCode(ev.key.toUpperCase().charCodeAt(0) & 31);
+        else if (!data && ev.key.length === 1 && !ev.metaKey) data = ev.key;
+        if (data) {
+          ev.preventDefault();
+          this.handlers.forEach((fn) => fn(data));
+        }
+      });
+    }
+
+    reset() {
+      this.lines = [''];
+      this.col = 0;
+      this.render();
+    }
+
+    onData(fn) { this.handlers.push(fn); }
+
+    focus() { this.el.focus(); }
+
+    write(bytes) {
+      let text = this.decoder ? this.decoder.decode(bytes, { stream: true }) : String.fromCharCode.apply(null, bytes);
+      if (/\x1b\[(2|3)J|\x1bc/.test(text)) {
+        this.lines = [''];
+        this.col = 0;
+        text = text.replace(/[\s\S]*(\x1b\[(2|3)J|\x1bc)/, '');
+      }
+      text = text
+        .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '') // window titles
+        .replace(/\x1b\[[0-9;?<=>]*[ -\/]*[@-~]/g, '') // colors, cursor moves
+        .replace(/\x1b[()*+][0-9A-Za-z]|\x1b[=>78NODEHM]/g, '');
+      let line = this.lines[this.lines.length - 1];
+      for (const ch of text) {
+        if (ch === '\n') {
+          this.lines[this.lines.length - 1] = line;
+          this.lines.push('');
+          line = '';
+          this.col = 0;
+        } else if (ch === '\r') {
+          this.col = 0;
+        } else if (ch === '\b') {
+          this.col = Math.max(0, this.col - 1);
+        } else if (ch >= ' ' || ch === '\t') {
+          line = line.slice(0, this.col) + ch + line.slice(this.col + 1);
+          this.col++;
+        }
+      }
+      this.lines[this.lines.length - 1] = line;
+      if (this.lines.length > 3000) this.lines.splice(0, this.lines.length - 3000);
+      this.render();
+    }
+
+    render() {
+      this.el.textContent = this.lines.join('\n');
+      this.el.scrollTop = this.el.scrollHeight;
+    }
+  }
+
   function createTerminal() {
+    const container = $('term');
+    if (T.simple) {
+      T.term = new SimpleTerm(container);
+      T.term.onData(termInput);
+      $('panel-terminal').classList.add('simple');
+      return;
+    }
     T.term = new window.Terminal({
       cursorBlink: true,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace',
@@ -1737,50 +2079,168 @@
     });
     T.fit = new window.FitAddon.FitAddon();
     T.term.loadAddon(T.fit);
-    T.term.open($('term'));
+    T.term.open(container);
     T.term.onData(termInput);
     T.term.onResize(({ cols, rows }) => termSend({ type: 'resize', cols, rows }));
-    new ResizeObserver(fitTerminal).observe($('term'));
+    if (typeof ResizeObserver === 'function') new ResizeObserver(fitTerminal).observe(container);
     fitTerminal();
   }
 
-  function connectTerminal(cwd) {
-    if (T.ws) T.ws.close();
-    fitTerminal();
-    const url = new URL(apiUrl('terminal', { cwd: cwd || S.cwd || '/', cols: T.term.cols, rows: T.term.rows }), location.href);
+  // ----- connections ---------------------------------------------------------
+
+  function base64ToBytes(b64) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+
+  function wsConnection(params, cb) {
+    const url = new URL(apiUrl('terminal', params), location.href);
     url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    url.hash = '';
+    let opened = false;
+    let done = false;
     const ws = new WebSocket(url.href);
     ws.binaryType = 'arraybuffer';
-    T.ws = ws;
-    let opened = false;
-    termStatus('Connecting…');
+    const finish = (reason) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      clearInterval(keepalive);
+      cb.onClose(reason, opened);
+    };
+    // Some proxies hold WebSockets without ever answering
+    const timer = setTimeout(() => { if (!opened) { finish('timeout'); try { ws.close(); } catch (e) { /* ignore */ } } }, 8000);
+    let keepalive = null;
     ws.onopen = () => {
       opened = true;
-      T.connected = true;
-      termStatus(`Connected to ${S.info.hostname} as ${S.info.running_as}`, 'on');
-      logMsg('ok', `Terminal session opened in ${cwd || S.cwd}`);
-      termSend({ type: 'resize', cols: T.term.cols, rows: T.term.rows });
-      clearInterval(T.keepalive);
-      T.keepalive = setInterval(() => termSend({ type: 'ping' }), 25000);
-      T.term.focus();
+      clearTimeout(timer);
+      keepalive = setInterval(() => ws.readyState === 1 && ws.send('{"type":"ping"}'), 25000);
+      cb.onOpen();
     };
-    ws.onmessage = (ev) => {
-      if (typeof ev.data !== 'string') T.term.write(new Uint8Array(ev.data));
+    ws.onmessage = (ev) => { if (typeof ev.data !== 'string') cb.onData(new Uint8Array(ev.data)); };
+    ws.onerror = () => { if (!opened) finish('error'); };
+    ws.onclose = () => finish(opened ? 'closed' : 'error');
+    return {
+      kind: 'websocket',
+      send: (obj) => { if (ws.readyState === 1) ws.send(JSON.stringify(obj)); },
+      close: () => { done = true; clearTimeout(timer); clearInterval(keepalive); try { ws.close(); } catch (e) { /* ignore */ } },
     };
-    ws.onclose = () => {
-      if (T.ws !== ws) return;
-      T.ws = null;
-      T.connected = false;
-      clearInterval(T.keepalive);
-      if (opened) {
-        T.term.write('\r\n\x1b[90m[Session closed. Press Enter or click “New session” to start a new one.]\x1b[0m\r\n');
-        termStatus('Disconnected', 'warn');
-        logMsg('info', 'Terminal session closed');
-      } else {
-        termStatus('Could not open a terminal: it may be disabled, or you may not have the “terminal” permission.', 'warn');
-        logMsg('error', 'Could not open a terminal session');
+  }
+
+  function httpConnection(params, cb) {
+    let id = null;
+    let done = false;
+    let queue = [];
+    let sending = false;
+    const finish = (reason, opened) => {
+      if (done) return;
+      done = true;
+      cb.onClose(reason, opened);
+    };
+    const flush = async () => {
+      if (sending || !id || !queue.length || done) return;
+      sending = true;
+      const messages = queue;
+      queue = [];
+      try {
+        await api('POST', 'terminal/send', { body: { id, messages } });
+      } catch (err) {
+        if (err.status === 410) finish('closed', true);
+      }
+      sending = false;
+      flush();
+    };
+    const poll = async () => {
+      let failures = 0;
+      while (!done) {
+        try {
+          const r = await api('GET', 'terminal/read', { params: { id, wait: 25 } });
+          failures = 0;
+          if (done) return;
+          if (r.data) cb.onData(base64ToBytes(r.data));
+          if (r.ended) return finish('closed', true);
+        } catch (err) {
+          if (done) return;
+          if (err.status === 410 || ++failures > 4) return finish(err.status === 410 ? 'closed' : err.message, true);
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
       }
     };
+    api('POST', 'terminal/open', { body: params }).then((r) => {
+      if (done) {
+        api('POST', 'terminal/close', { body: { id: r.id } }).catch(() => {});
+        return;
+      }
+      id = r.id;
+      cb.onOpen();
+      poll();
+      flush();
+    }, (err) => finish(err, false));
+    return {
+      kind: 'http',
+      send: (obj) => { queue.push(obj); flush(); },
+      close: () => {
+        if (done) return;
+        done = true;
+        if (id) api('POST', 'terminal/close', { body: { id } }).catch(() => {});
+      },
+    };
+  }
+
+  function openFailureMessage(err) {
+    if (err instanceof ApiError && err.status && err.status !== 200) return err.message;
+    // SSOwat answers with its portal page (not JSON) when access is refused
+    return 'access refused. Make sure your account has the "Terminal" permission of the app '
+      + '(YunoHost admin > Users > Groups and permissions), then reload this page.';
+  }
+
+  function connectTerminal(cwd, forceKind) {
+    if (T.conn) T.conn.close();
+    T.conn = null;
+    T.connected = false;
+    fitTerminal();
+    const dir = cwd || S.cwd || '/';
+    const params = { cwd: dir, cols: T.term.cols, rows: T.term.rows };
+    const canWs = typeof WebSocket === 'function' && store.get('termTransport', 'websocket') !== 'http';
+    const kind = forceKind || (canWs ? 'websocket' : 'http');
+    termStatus(kind === 'http' ? 'Connecting (compatibility mode)…' : 'Connecting…');
+    let conn = null;
+    const cb = {
+      onOpen() {
+        if (T.conn !== conn) return;
+        T.connected = true;
+        termStatus(`Connected to ${S.info.hostname} as ${S.info.running_as}` + (conn.kind === 'http' ? ' (compatibility mode)' : ''), 'on');
+        logMsg('ok', `Terminal session opened in ${dir}` + (conn.kind === 'http' ? ' (over HTTP)' : ''));
+        termSend({ type: 'resize', cols: T.term.cols, rows: T.term.rows });
+        T.term.focus();
+      },
+      onData(bytes) {
+        if (T.conn === conn) T.term.write(bytes);
+      },
+      onClose(reason, opened) {
+        if (T.conn !== conn) return;
+        T.conn = null;
+        T.connected = false;
+        if (opened) {
+          T.term.write('\r\n\x1b[90m[Session closed. Press Enter or tap “New session” to start a new one.]\x1b[0m\r\n');
+          termStatus('Disconnected', 'warn');
+          logMsg('info', 'Terminal session closed');
+        } else if (conn.kind === 'websocket') {
+          // The WebSocket didn't get through: use plain HTTP requests instead, and remember it
+          logMsg('info', `Terminal: WebSocket connection failed (${reason}), switching to compatibility mode`);
+          store.set('termTransport', 'http');
+          connectTerminal(dir, 'http');
+        } else {
+          const msg = 'Could not open a terminal: ' + openFailureMessage(reason);
+          termStatus(msg, 'warn');
+          logMsg('error', msg);
+        }
+      },
+    };
+    conn = kind === 'http' ? httpConnection(params, cb) : wsConnection(params, cb);
+    T.conn = conn;
   }
 
   async function openTerminal(cwd) {
@@ -1792,12 +2252,17 @@
       if ($('panel-terminal').classList.contains('hidden')) switchTab('terminal');
       if (!T.term) {
         termStatus('Loading the terminal…');
-        await ensureXterm();
-        if (typeof window.Terminal !== 'function' || !window.FitAddon) {
-          // The script loaded but couldn't run, e.g. a browser too old for its JavaScript
-          T.loading = null;
-          throw new Error('the terminal could not start in this browser. Update your browser '
-            + '(on iPad: update iPadOS in Settings > General > Software Update) and reload the page.');
+        if (!T.simple) {
+          try {
+            await ensureXterm();
+          } catch (err) {
+            T.loading = null;
+          }
+          if (typeof window.Terminal !== 'function' || !window.FitAddon) {
+            // xterm.js couldn't load or run in this browser: use the simple text view
+            T.simple = true;
+            logMsg('info', 'Terminal: using the simple text view (this browser can\'t run the full terminal)');
+          }
         }
         // Give the terminal some room the first time it's opened
         const bottom = $('bottom');
@@ -1821,6 +2286,14 @@
     }
   }
 
+  function toggleLineInput(show) {
+    const panel = $('panel-terminal');
+    const on = panel.classList.toggle('line-input', show);
+    store.set('termLineInput', on);
+    if (on) $('term-line-input').focus();
+    fitTerminal();
+  }
+
   function setupTerminal() {
     const keys = [
       ['Esc', '\x1b'], ['Tab', '\t'], ['Ctrl', null], ['↑', '\x1b[A'], ['↓', '\x1b[B'], ['←', '\x1b[D'], ['→', '\x1b[C'],
@@ -1830,16 +2303,32 @@
     for (const [label, seq] of keys) {
       const btn = h('button', { type: 'button', text: label });
       if (seq === null) btn.dataset.ctrl = '1';
-      // pointerdown + preventDefault keeps the focus (and the on-screen keyboard) in the terminal
-      btn.addEventListener('pointerdown', (ev) => {
-        ev.preventDefault();
+      // preventDefault on pointerdown keeps the focus (and the on-screen keyboard) where it is
+      btn.addEventListener('pointerdown', (ev) => ev.preventDefault());
+      btn.addEventListener('mousedown', (ev) => ev.preventDefault());
+      btn.addEventListener('click', () => {
         if (seq === null) setCtrl(!T.ctrl);
-        else termSend({ type: 'input', data: seq });
-        if (T.term) T.term.focus();
+        else termInput(seq);
       });
       bar.append(btn);
     }
-    if (window.matchMedia('(pointer: coarse)').matches) document.body.classList.add('touch');
+    const touch = window.matchMedia('(pointer: coarse)').matches || ('ontouchstart' in window);
+    if (touch) document.body.classList.add('touch');
+    // On touch devices, a regular text field is the most reliable way to type commands
+    if (store.get('termLineInput', touch)) $('panel-terminal').classList.add('line-input');
+
+    $('term-line').addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      const input = $('term-line-input');
+      if (!T.connected) {
+        if (!T.conn) connectTerminal(S.cwd);
+        return;
+      }
+      termSend({ type: 'input', data: input.value + '\r' });
+      input.value = '';
+      input.focus();
+    });
+    $('term-line-toggle').addEventListener('click', () => toggleLineInput());
     $('term-new').addEventListener('click', () => {
       if (T.term) {
         T.term.reset();
@@ -1851,18 +2340,13 @@
     $('term-cd').addEventListener('click', () => {
       if (T.connected) {
         termSend(cdCommand(S.cwd));
-        T.term.focus();
+        if (T.term) T.term.focus();
       } else {
         openTerminal(S.cwd);
       }
     });
-    // Enter on a closed session starts a new one
-    $('term').addEventListener('keydown', (ev) => {
-      if (ev.key === 'Enter' && T.term && !T.ws) {
-        ev.preventDefault();
-        connectTerminal(S.cwd);
-      }
-    }, true);
+    // Tapping the terminal must give it the keyboard focus (iPad)
+    $('term').addEventListener('click', () => { if (T.term) T.term.focus(); });
     window.addEventListener('resize', fitTerminal);
   }
 
@@ -2158,9 +2642,9 @@
         if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 's') {
           ev.preventDefault();
           if (!openModals) saveEditor();
-        } else if (ev.key === 'Escape' && !openModals) {
+        } else if (ev.key === 'Escape' && !openModals && !(ED.engine && ED.engine.dialogOpen())) {
           ev.preventDefault();
-          closeEditor();
+          hideEditor();
         }
         return;
       }
@@ -2418,6 +2902,7 @@
       who.append(h('span', { class: 'warn-badge', text: 'full access', title: `The file manager runs as ${S.info.running_as}: be careful, you can modify any file of the system.` }));
     }
     document.title = `Server Manager · ${S.info.hostname}`;
+    $('status-version').textContent = `v${S.info.version}`;
     $('tab-terminal').classList.toggle('hidden', !S.info.terminal);
     updateToolbar();
     logMsg('info', `Connected as ${S.info.user}. Managing ${S.info.root} as system user ${S.info.running_as}.`);

@@ -1,0 +1,4 @@
+codemirror 5.65.21 (https://www.npmjs.com/package/codemirror), MIT license.
+codemirror-bundle.js and codemirror-bundle.css are the concatenation of the
+files listed at the top of each bundle, unmodified.
+CodeMirror 5 is used because it runs on older browsers (iPad Safari included).

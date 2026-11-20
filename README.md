@@ -9,7 +9,7 @@ A web file manager and terminal for your [YunoHost](https://yunohost.org) server
 - Folder tree, address bar, bookmarks, back/forward/up navigation, sortable columns (name, size, type, date, permissions, owner)
 - Upload files and whole folders, with the toolbar or by drag & drop, in a transfer queue with progress, speed and an "already exists" prompt (overwrite / keep both / skip, for one file or the whole batch)
 - Download files, and folders or multiple selections as a zip archive
-- Built-in text editor for configuration files: line numbers, auto-indent, tab/shift-tab, Ctrl+S, warning if the file changed on the server meanwhile, and it keeps the encoding (UTF-8, UTF-8 with BOM, Latin-1), line endings (LF/CRLF), permissions and owner of the file
+- **Code editor** (the Editor button, or tap/double-click a text file): syntax highlighting (nginx, shell, YAML, JSON, PHP, Python, INI, TOML, Dockerfile, SQL, Markdown, HTML/CSS/JS…, detected from the file), several files open in tabs, find & replace, go to line, comment/uncomment, undo/redo, line wrap, text size, Ctrl+S. It warns if the file changed on the server meanwhile, and keeps the encoding (UTF-8, UTF-8 with BOM, Latin-1), line endings (LF/CRLF), permissions and owner of the file. "Open…" opens (or creates) any file by its path
 - New file / new folder, rename (F2), copy / cut / paste (Ctrl+C/X/V), move by drag & drop onto a folder, delete
 - Change permissions with a FileZilla-like dialog (checkboxes or numeric value, recursive, files only / folders only) and change owner and group
 - Compress to zip, extract zip / tar / tar.gz / tar.bz2 / tar.xz archives
@@ -64,7 +64,11 @@ With full access, whoever can use this app effectively has root access to your s
 
 - `sources/server.py`: the backend, using only the Python standard library (no pip packages to install or keep up to date).
 - `sources/terminal.py`: the web terminal (pseudo-terminal + WebSocket, also standard library only).
-- `sources/static/`: the frontend, plain HTML/CSS/JavaScript without build step. The terminal emulator is [xterm.js](https://xtermjs.org) 5.5.0 (MIT; 6.x needs Safari 16.4+, so 5.5 is used to support older iPads), shipped in `sources/static/vendor/xterm/`, so nothing is loaded from external sites.
+- `sources/static/`: the frontend, plain HTML/CSS/JavaScript without build step. Two libraries are shipped in `sources/static/vendor/`, so nothing is loaded from external sites:
+  - the terminal emulator [xterm.js](https://xtermjs.org) 5.5.0 (MIT; 6.x needs Safari 16.4+, so 5.5 is used to support older iPads),
+  - the code editor [CodeMirror 5](https://codemirror.net/5/) 5.65.21 (MIT), chosen over CodeMirror 6 because it runs on older browsers too.
+
+The terminal connects with a WebSocket, and automatically switches to plain HTTP requests ("compatibility mode") when WebSockets don't get through (some proxies, VPNs or browsers). On touch devices a command line field and a bar of special keys are shown under it. If the browser can't run xterm.js at all, a simple text view is used. If the editor library can't load, a basic text editor is used.
 - `scripts/`, `conf/`, `manifest.toml`, `config_panel.toml`: the YunoHost packaging (packaging v2, helpers 2.1).
 
 NGINX forwards `https://your.domain/files/*` to the app (and the terminal's WebSocket to `/files/api/terminal`); SSOwat adds the `YNH_USER` header identifying the logged-in user.

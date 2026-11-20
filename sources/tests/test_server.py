@@ -81,7 +81,8 @@ class ServerTestCase(unittest.TestCase):
         return res.status, (json.loads(data) if data and "json" in res.getheader("Content-Type", "") else data)
 
     def get(self, endpoint, **params):
-        return self.request("GET", "/api/" + endpoint, params=params)
+        headers = {"X-Requested-With": "ServerManager"} if endpoint.startswith("terminal/") else None
+        return self.request("GET", "/api/" + endpoint, params=params, headers=headers)
 
     def post(self, endpoint, body):
         return self.request("POST", "/api/" + endpoint, body=body)
@@ -527,6 +528,58 @@ class ServerTestCase(unittest.TestCase):
                 break
             time.sleep(0.1)
         self.assertEqual(self.terminal.sessions, {})
+
+    def test_terminal_over_http(self):
+        os.mkdir(os.path.join(self.root, "httpdir"))
+        status, data = self.post("terminal/open", {"cwd": "/httpdir", "rows": 30, "cols": 100})
+        self.assertEqual(status, 200, data)
+        sid = data["id"]
+        status, _ = self.post("terminal/send", {"id": sid, "messages": [
+            {"type": "input", "data": "echo HTTP_$((40+2)); pwd; stty size\n"}]})
+        self.assertEqual(status, 200)
+        output = b""
+        for _ in range(20):
+            status, data = self.get("terminal/read", id=sid, wait="2")
+            self.assertEqual(status, 200)
+            output += base64.b64decode(data["data"])
+            if b"30 100" in output:
+                break
+        self.assertIn(b"HTTP_42", output)
+        self.assertIn(os.path.join(self.root, "httpdir").encode(), output)
+        # Another user can't use this session
+        status, _ = self.request("GET", "/api/terminal/read", params={"id": sid, "wait": "0"},
+                                 user="mallory", headers={"X-Requested-With": "ServerManager"})
+        self.assertEqual(status, 410)
+        # Requests without the app's header are refused
+        status, _ = self.request("GET", "/api/terminal/read", params={"id": sid, "wait": "0"})
+        self.assertEqual(status, 403)
+        # The shell exiting ends the session
+        self.post("terminal/send", {"id": sid, "messages": [{"type": "input", "data": "exit\n"}]})
+        ended = False
+        for _ in range(20):
+            status, data = self.get("terminal/read", id=sid, wait="2")
+            if status == 410 or data.get("ended"):
+                ended = True
+                break
+        self.assertTrue(ended)
+        self.assertEqual(self.terminal.sessions, {})
+
+    def test_terminal_falls_back_when_systemd_run_fails(self):
+        manager = server.TerminalManager(enabled=True, mode="systemd-run")
+        bindir = tempfile.mkdtemp(prefix="sm-bin-")
+        fake = os.path.join(bindir, "systemd-run")
+        with open(fake, "w") as f:
+            f.write("#!/bin/sh\necho 'Failed to connect to bus' >&2\nexit 1\n")
+        os.chmod(fake, 0o755)
+        import terminal
+        original = terminal.DEFAULT_PATH
+        try:
+            terminal.DEFAULT_PATH = bindir + ":" + original
+            manager.self_test()
+        finally:
+            terminal.DEFAULT_PATH = original
+            shutil.rmtree(bindir)
+        self.assertEqual(manager.mode, "direct")
 
     def test_terminal_requires_same_origin(self):
         sock, status = self.ws_connect(origin="https://evil.example")

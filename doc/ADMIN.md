@@ -11,6 +11,8 @@ The terminal (the "Terminal" tab at the bottom of the app, or the Terminal butto
 
 Who can use it is controlled by the separate **Terminal** permission of the app (only `admins` by default), so you can give someone access to the files without giving them a shell. It can be disabled entirely in the configuration panel (`main.access.terminal`).
 
+If the terminal can't connect with a WebSocket (some proxies, VPNs or browsers block them), it automatically switches to "compatibility mode", which uses regular HTTP requests. If `systemd-run` doesn't work on the server, the app notices it when starting and runs the shells itself (as `root` but inside the app's sandbox: some commands like `systemctl` may then be refused); the reason is written in the app's log.
+
 Upgrading or restarting the app ends the open terminal sessions: run `yunohost app upgrade` from the admin interface or a real SSH session rather than from the app's own terminal.
 
 ### Changing the managed folder or the access level

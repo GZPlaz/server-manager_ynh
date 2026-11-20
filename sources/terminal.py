@@ -1,7 +1,9 @@
 """Web terminal for Server Manager.
 
-Runs a shell in a pseudo-terminal and connects it to the browser through a
-WebSocket (RFC 6455, implemented with the standard library only).
+Runs a shell in a pseudo-terminal. The browser talks to it either through a
+WebSocket (RFC 6455, implemented with the standard library only), or, when
+WebSockets don't get through (some proxies, old browsers), through plain HTTP
+requests: long-polling for the output and small POSTs for the keystrokes.
 
 Two ways of starting the shell:
 
@@ -20,6 +22,7 @@ import json
 import logging
 import os
 import pwd
+import secrets
 import select
 import shutil
 import signal
@@ -33,6 +36,8 @@ log = logging.getLogger("server-manager")
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 MAX_MESSAGE = 1024 * 1024
+MAX_BUFFER = 2 * 1024 * 1024
+HTTP_IDLE_TIMEOUT = 90  # seconds without a poll before an HTTP session is closed
 DEFAULT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 OP_CONT, OP_TEXT, OP_BINARY, OP_CLOSE, OP_PING, OP_PONG = 0x0, 0x1, 0x2, 0x8, 0x9, 0xA
@@ -147,13 +152,55 @@ def clamp(value, low, high, default):
 
 
 class Session:
+    """A shell in a pseudo-terminal. Its output is collected by a background
+    thread into a buffer that the WebSocket or HTTP side drains."""
+
     def __init__(self, sid, user, proc, master):
         self.id = sid
         self.user = user
         self.proc = proc
         self.master = master
         self.started = time.monotonic()
-        self.stop = threading.Event()
+        self.last_seen = time.monotonic()
+        self.transport = None
+        self.buffer = bytearray()
+        self.cond = threading.Condition()
+        self.ended = False  # the shell exited
+        self.closed = False
+        self.reader = threading.Thread(target=self._read_loop, name=f"terminal-{sid}", daemon=True)
+        self.reader.start()
+
+    def _read_loop(self):
+        while not self.closed:
+            try:
+                ready, _, _ = select.select([self.master], [], [], 0.5)
+                if not ready:
+                    continue
+                data = os.read(self.master, 65536)
+            except (OSError, ValueError):  # EIO: the shell exited
+                break
+            if not data:
+                break
+            with self.cond:
+                self.buffer += data
+                if len(self.buffer) > MAX_BUFFER:  # nobody is reading: keep the end
+                    del self.buffer[:len(self.buffer) - MAX_BUFFER]
+                self.cond.notify_all()
+        with self.cond:
+            self.ended = True
+            self.cond.notify_all()
+
+    def take(self, timeout):
+        """Wait up to `timeout` seconds for output. Returns (data, ended)."""
+        with self.cond:
+            if not self.buffer and not self.ended:
+                self.cond.wait(timeout)
+                if self.buffer and not self.ended:
+                    # Let a burst of output arrive so that it's sent in one go
+                    self.cond.wait(0.01)
+            data = bytes(self.buffer)
+            self.buffer.clear()
+            return data, self.ended and not data
 
     def write(self, data):
         while data:
@@ -164,7 +211,12 @@ class Session:
         set_winsize(self.master, rows, cols)
 
     def close(self):
-        self.stop.set()
+        with self.cond:
+            if self.closed:
+                return
+            self.closed = True
+            self.cond.notify_all()
+        self.reader.join(timeout=2)
         try:
             os.close(self.master)  # hangs up the terminal: the shell gets SIGHUP
         except OSError:
@@ -190,6 +242,27 @@ class TerminalManager:
         self.sessions = {}
         self.lock = threading.Lock()
         self.counter = 0
+        reaper = threading.Thread(target=self._reap_loop, name="terminal-reaper", daemon=True)
+        reaper.start()
+
+    def self_test(self):
+        """Make sure systemd-run works here, otherwise fall back to a direct shell."""
+        if not self.enabled or self.mode != "systemd-run":
+            return
+        try:
+            result = subprocess.run(
+                ["systemd-run", "--quiet", "--collect", "--wait", "--uid=root",
+                 "--description=Server Manager terminal check", "/bin/true"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                timeout=20, env={"PATH": DEFAULT_PATH})
+            if result.returncode == 0:
+                return
+            reason = result.stdout.decode("utf-8", "replace").strip() or f"exit code {result.returncode}"
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            reason = str(exc)
+        log.warning("systemd-run does not work here (%s): terminal sessions will be started "
+                    "directly by the app, with its restrictions", reason)
+        self.mode = "direct"
 
     def _shell(self, pw):
         shell = pw.pw_shell
@@ -225,9 +298,9 @@ class TerminalManager:
     def open(self, user, cwd, rows=24, cols=80):
         with self.lock:
             if len(self.sessions) >= self.max_sessions:
-                raise TerminalError("Too many terminal sessions are open")
+                raise TerminalError("Too many terminal sessions are open, close some first")
             self.counter += 1
-            sid = self.counter
+            sid = f"{self.counter}-{secrets.token_urlsafe(16)}"
         argv, env, workdir = self.command(cwd)
         master, slave = os.openpty()
         try:
@@ -249,23 +322,44 @@ class TerminalManager:
             self.sessions[sid] = session
         return session
 
-    def run(self, ws, session):
+    def get(self, sid, user):
+        with self.lock:
+            session = self.sessions.get(sid or "")
+        if session is None or session.user != user:
+            raise TerminalError("This terminal session doesn't exist anymore")
+        session.last_seen = time.monotonic()
+        return session
+
+    def close(self, session):
+        with self.lock:
+            self.sessions.pop(session.id, None)
+        session.close()
+
+    def _reap_loop(self):
+        # HTTP clients can disappear without saying goodbye (tab closed, iPad asleep...)
+        while True:
+            time.sleep(15)
+            now = time.monotonic()
+            with self.lock:
+                idle = [s for s in self.sessions.values()
+                        if s.transport == "http" and now - s.last_seen > HTTP_IDLE_TIMEOUT]
+            for session in idle:
+                log.info("Closing idle terminal session %s", session.id.split("-")[0])
+                self.close(session)
+
+    def run_websocket(self, ws, session):
         """Shuttle data between the WebSocket and the terminal until either ends."""
+        session.transport = "websocket"
 
         def pump_output():
             try:
-                while not session.stop.is_set():
-                    ready, _, _ = select.select([session.master], [], [], 0.5)
-                    if not ready:
-                        continue
-                    try:
-                        data = os.read(session.master, 65536)
-                    except OSError:  # EIO: the shell exited
+                while not session.closed:
+                    data, ended = session.take(0.5)
+                    if data:
+                        ws.send(OP_BINARY, data)
+                    if ended:
                         break
-                    if not data:
-                        break
-                    ws.send(OP_BINARY, data)
-            except (WebSocketClosed, OSError, ValueError):
+            except (WebSocketClosed, OSError):
                 pass
             finally:
                 ws.close()
@@ -274,25 +368,26 @@ class TerminalManager:
                 except OSError:
                     pass
 
-        reader = threading.Thread(target=pump_output, name=f"terminal-{session.id}", daemon=True)
-        reader.start()
+        pump = threading.Thread(target=pump_output, name=f"terminal-ws-{session.id}", daemon=True)
+        pump.start()
         try:
             while True:
-                opcode, payload = ws.recv()
+                _, payload = ws.recv()
                 try:
                     msg = json.loads(payload.decode("utf-8"))
                 except (UnicodeDecodeError, ValueError):
                     continue
-                kind = msg.get("type") if isinstance(msg, dict) else None
-                if kind == "input" and isinstance(msg.get("data"), str):
-                    session.write(msg["data"].encode("utf-8", "replace"))
-                elif kind == "resize":
-                    session.resize(clamp(msg.get("rows"), 2, 500, 24), clamp(msg.get("cols"), 2, 1000, 80))
+                self.handle_message(session, msg)
         except (WebSocketClosed, OSError):
             pass
         finally:
-            session.stop.set()
-            reader.join(timeout=2)
-            session.close()
-            with self.lock:
-                self.sessions.pop(session.id, None)
+            self.close(session)
+            pump.join(timeout=2)
+
+    @staticmethod
+    def handle_message(session, msg):
+        kind = msg.get("type") if isinstance(msg, dict) else None
+        if kind == "input" and isinstance(msg.get("data"), str):
+            session.write(msg["data"].encode("utf-8", "replace"))
+        elif kind == "resize":
+            session.resize(clamp(msg.get("rows"), 2, 500, 24), clamp(msg.get("cols"), 2, 1000, 80))

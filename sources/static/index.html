@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Server Manager</title>
   <link rel="icon" href="static/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="static/app.css">
+  <link rel="stylesheet" href="static/app.css?v=__VERSION__">
 </head>
 <body>
   <header class="topbar">
@@ -85,11 +85,17 @@
       <div class="term-bar">
         <span class="term-status" id="term-status">Not connected</span>
         <span class="spacer"></span>
+        <button class="link-btn" id="term-line-toggle" title="Show or hide a text field to type commands (handy on tablets)">Command line</button>
         <button class="link-btn" id="term-cd" title="Change the terminal's directory to the folder shown in the file list">Go to current folder</button>
         <button class="link-btn" id="term-new">New session</button>
       </div>
       <div class="term-keys" id="term-keys" aria-label="Special keys"></div>
       <div class="term" id="term"></div>
+      <form class="term-line" id="term-line" autocomplete="off">
+        <span class="term-line-prompt" aria-hidden="true">$</span>
+        <input id="term-line-input" type="text" enterkeyhint="send" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Type a command, then Enter" aria-label="Command">
+        <button class="btn primary" type="submit">Run</button>
+      </form>
     </div>
   </section>
 
@@ -98,23 +104,24 @@
     <span id="status-sel"></span>
     <span class="spacer"></span>
     <span id="status-disk"></span>
+    <span id="status-version" class="muted"></span>
   </footer>
 
-  <div class="editor hidden" id="editor" role="dialog" aria-modal="true" aria-label="Text editor">
-    <div class="editor-bar">
-      <span class="editor-title" id="editor-title"></span>
-      <span class="editor-meta" id="editor-meta"></span>
-      <span class="spacer"></span>
-      <label class="check"><input type="checkbox" id="editor-wrap"> Wrap lines</label>
-      <button class="btn" id="editor-reload">Reload</button>
-      <button class="btn primary" id="editor-save">Save</button>
-      <button class="btn" id="editor-close">Close</button>
+  <div class="editor hidden" id="editor" role="dialog" aria-label="File editor">
+    <div class="editor-top">
+      <button class="btn" id="ed-files" type="button" title="Back to the files (your open files stay open)">‹ Files</button>
+      <div class="editor-tabs" id="ed-tabs" role="tablist"></div>
+      <button class="btn" id="ed-open" type="button" title="Open a file by its path">Open…</button>
     </div>
-    <div class="editor-body">
-      <pre class="gutter" id="editor-gutter" aria-hidden="true"></pre>
-      <textarea id="editor-text" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off"></textarea>
+    <div class="editor-tools" id="ed-tools"></div>
+    <div class="editor-body" id="ed-body">
+      <div class="editor-empty" id="ed-empty">
+        <p>No file is open.</p>
+        <p class="muted">Tap a text file in the file list (or select it and press Edit), or open one by its path.</p>
+        <button class="btn primary" id="ed-empty-open" type="button">Open a file…</button>
+      </div>
     </div>
-    <div class="editor-status" id="editor-status"></div>
+    <div class="editor-status" id="ed-status"></div>
   </div>
 
   <div class="context-menu hidden" id="context-menu" role="menu"></div>
@@ -122,6 +129,6 @@
   <input type="file" id="file-input" multiple hidden>
   <input type="file" id="folder-input" webkitdirectory multiple hidden>
 
-  <script src="static/app.js"></script>
+  <script src="static/app.js?v=__VERSION__"></script>
 </body>
 </html>
